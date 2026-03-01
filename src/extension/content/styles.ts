@@ -285,6 +285,59 @@ export const PANEL_CSS = `
   }
   .ts-btn-insert:hover { background: #4338ca; }
 
+  .ts-mode-toggle {
+    margin-top: 8px;
+    margin-bottom: 4px;
+    display: flex;
+    align-items: center;
+  }
+  .ts-mode-toggle label {
+    font-size: 12px;
+    color: #64748b;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+  }
+  .ts-mode-toggle input[type="checkbox"] {
+    accent-color: #4f46e5;
+    width: 16px;
+    height: 16px;
+  }
+
+  .ts-insert-progress {
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 8px;
+    color: #3730a3;
+    font-size: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ts-insert-success {
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: #f0fdf4;
+    border: 1px solid #bbf7d0;
+    border-radius: 8px;
+    color: #166534;
+    font-size: 12px;
+    line-height: 1.5;
+  }
+  .ts-insert-guide {
+    margin-top: 10px;
+    padding: 10px 14px;
+    background: #eef2ff;
+    border: 1px solid #c7d2fe;
+    border-radius: 8px;
+    color: #3730a3;
+    font-size: 12px;
+    line-height: 1.6;
+  }
+
   .ts-error {
     margin-top: 12px;
     padding: 10px 14px;

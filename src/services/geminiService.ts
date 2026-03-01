@@ -39,7 +39,7 @@ export async function generatePageBlocks(prompt: string): Promise<Block[]> {
     throw new Error('Gemini API not initialized. Please set your API key.');
   }
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview' });
 
   const result = await model.generateContent([
     { text: SYSTEM_PROMPT },
@@ -67,7 +67,7 @@ export async function generateBlockFromPrompt(prompt: string, blockType: string)
     throw new Error('Gemini API not initialized.');
   }
 
-  const model = genAI.getGenerativeModel({ model: 'gemini-2.5-flash' });
+  const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview' });
 
   const result = await model.generateContent([
     { text: SYSTEM_PROMPT },

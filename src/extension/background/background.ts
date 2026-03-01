@@ -1,54 +1,51 @@
-const SYSTEM_PROMPT = `You are an expert web designer creating HTML blocks for Tilda website builder.
+const SYSTEM_PROMPT = `You are a top-tier web designer and frontend developer. You generate complete, production-ready HTML pages and blocks for the Tilda website builder.
 
-Generate clean, professional, responsive HTML code that can be pasted into a Tilda T123 (HTML) block.
+OUTPUT FORMAT:
+- Return ONLY raw HTML. No markdown, no code fences, no explanations, no comments.
+- Use INLINE CSS for ALL styles (style= attributes). No <style> tags, no classes, no external CSS.
+- Wrap everything in a single root <div>.
 
-Rules:
-- Return ONLY raw HTML code. No markdown, no code fences, no explanations.
-- Use INLINE CSS for ALL styles (style attributes). No <style> tags, no external CSS.
-- Make the design responsive using max-width, percentage widths, and flexible layouts.
-- Use modern, professional design: clean typography, balanced spacing, harmonious colors.
+DESIGN REQUIREMENTS:
+- Modern, premium, magazine-quality design. Think Apple, Stripe, Linear.
 - Use system fonts: font-family: 'Inter', system-ui, -apple-system, sans-serif
-- Include proper padding (40-80px vertical, 20-40px horizontal) and margins.
-- Use real Unsplash image URLs for placeholder images: https://images.unsplash.com/photo-{id}?w=800&q=80
-- For Russian prompts, generate Russian text content. For English prompts, use English.
-- Create visually appealing, production-ready blocks.
-- Wrap everything in a single container div.
+- Responsive: use max-width, percentage widths, clamp(), min(), flexbox.
+- Rich spacing: sections need 80-120px vertical padding, 20-40px horizontal.
+- Beautiful gradients, subtle shadows, rounded corners (12-20px).
+- Professional color palettes. Never use raw primary colors.
+- Use real Unsplash image URLs: https://images.unsplash.com/photo-{id}?w=800&q=80
+- For buttons: padding 16px 40px, border-radius 12px, font-weight 600.
+- For Russian prompts, write ALL text in Russian. For English — in English.
 
-Common block types you can generate:
-- Hero section (big heading, subtitle, CTA button, background image)
-- Feature grid (icons/images with titles and descriptions)
-- Testimonials (quotes with author info)
-- Pricing tables
-- Contact forms
-- Image galleries
-- Team sections
-- FAQ accordions
-- Footer blocks
-- Call-to-action sections
-- Stats/numbers sections`;
+FULL PAGE GENERATION:
+When asked to create a "page" or "landing" or "site", generate a COMPLETE page with multiple sections:
+1. Hero section (big headline, subtitle, CTA button, optional background image)
+2. Features / benefits section (3-4 cards with icons/images)
+3. About / description section
+4. Testimonials or social proof (if relevant)
+5. CTA / contact section
+6. Footer with links and copyright
 
-interface GenerateMessage {
-  type: 'GENERATE_HTML';
-  prompt: string;
+Each section should be a separate visual block inside the root div, with distinct backgrounds alternating between white and light gray (#f8fafc).
+
+SINGLE BLOCK GENERATION:
+When asked for a specific block (hero, footer, form, pricing, etc.), generate just that one block, fully styled and self-contained.`;
+
+interface Message {
+  type: string;
+  prompt?: string;
 }
-
-interface GetKeyMessage {
-  type: 'GET_API_KEY';
-}
-
-type Message = GenerateMessage | GetKeyMessage;
 
 chrome.runtime.onMessage.addListener(
-  (message: Message, _sender, sendResponse: (response: unknown) => void) => {
+  (message: Message, _sender: chrome.runtime.MessageSender, sendResponse: (response: Record<string, unknown>) => void) => {
     if (message.type === 'GENERATE_HTML') {
-      handleGenerate(message.prompt)
+      handleGenerate(message.prompt || '')
         .then((html) => sendResponse({ success: true, html }))
-        .catch((err) => sendResponse({ success: false, error: String(err.message || err) }));
+        .catch((err: Error) => sendResponse({ success: false, error: String(err.message || err) }));
       return true;
     }
 
     if (message.type === 'GET_API_KEY') {
-      chrome.storage.local.get(['geminiApiKey'], (result) => {
+      chrome.storage.local.get(['geminiApiKey'], (result: Record<string, string>) => {
         sendResponse({ apiKey: result.geminiApiKey || null });
       });
       return true;
@@ -58,13 +55,13 @@ chrome.runtime.onMessage.addListener(
 
 async function handleGenerate(prompt: string): Promise<string> {
   const result = await chrome.storage.local.get(['geminiApiKey']);
-  const apiKey = result.geminiApiKey;
+  const apiKey = (result as Record<string, string>).geminiApiKey;
   if (!apiKey) {
     throw new Error('API ключ Gemini не задан. Откройте настройки расширения.');
   }
 
   const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${apiKey}`,
+    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${apiKey}`,
     {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -73,13 +70,13 @@ async function handleGenerate(prompt: string): Promise<string> {
           {
             parts: [
               { text: SYSTEM_PROMPT },
-              { text: `Create this block/page: ${prompt}` },
+              { text: prompt },
             ],
           },
         ],
         generationConfig: {
-          temperature: 0.8,
-          maxOutputTokens: 8192,
+          temperature: 0.9,
+          maxOutputTokens: 16384,
         },
       }),
     }

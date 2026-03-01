@@ -29,7 +29,7 @@ Tilda Space AI is a dual-product codebase:
 ### Non-obvious caveats
 
 - **tilda.ru vs tilda.cc**: Russian users are served from `tilda.ru`, not `tilda.cc`. Both domains must be in `manifest.json` content_scripts matches and host_permissions.
-- **Gemini model versioning**: Google regularly deprecates older Gemini models. The current model is `gemini-2.5-flash` (set in `src/extension/background/background.ts` and `src/services/geminiService.ts`). If generation returns a 404 "model not found" error, update to the latest model name per [Google's model list](https://ai.google.dev/gemini-api/docs/models).
+- **Gemini model versioning**: Google regularly deprecates older Gemini models. The current model is `gemini-3.1-pro-preview` (set in `src/extension/background/background.ts` and `src/services/geminiService.ts`). If generation returns a 404 "model not found" error, list available models with `curl "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY"` and update accordingly.
 - **Gemini API key**: Required for AI generation. Set via the extension popup or via the standalone editor's left panel. The key is stored in `chrome.storage.local` (extension) or in-memory (standalone). Add it as a `GEMINI_API_KEY` secret for Cloud Agent sessions.
 - **Content script Shadow DOM**: The floating panel renders inside a closed Shadow DOM to avoid CSS conflicts with Tilda's page styles.
 - **Vite dev server** binds to `0.0.0.0:5173` (configured in `vite.config.ts`) so it's accessible from remote environments.
