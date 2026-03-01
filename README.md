@@ -1,42 +1,73 @@
-# Tilda Space
+# React + TypeScript + Vite
 
-Приложение для создания страниц сайта в стиле Tilda: визуальный конструктор блоков и экспорт в HTML с опциональной интеграцией Tilda API.
+This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
 
-## О проекте
+Currently, two official plugins are available:
 
-Tilda Space — это инструмент, который позволяет:
+- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
+- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
 
-- **Собирать страницу визуально** из блоков (заголовки, текст, изображения, кнопки, колонки, формы).
-- **Экспортировать** готовую страницу в HTML (для вставки в Tilda или размещения на своём сервере).
-- **Подключать Tilda API** (тариф Business Plan): просмотр проектов и страниц, экспорт уже созданных в Tilda страниц.
+## React Compiler
 
-> Официальный [Tilda API](https://help.tilda.cc/api) не предоставляет создания новых страниц — только чтение и экспорт. Поэтому приложение выступает как конструктор с экспортом и, при необходимости, как просмотр/экспорт существующих страниц Tilda.
+The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
 
-## План и архитектура
+## Expanding the ESLint configuration
 
-Подробный план, исследование API и этапы реализации — в [PLAN.md](./PLAN.md).
+If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
 
-## Быстрый старт (после реализации MVP)
+```js
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
 
-```bash
-npm install
-npm run dev
+      // Remove tseslint.configs.recommended and replace with this
+      tseslint.configs.recommendedTypeChecked,
+      // Alternatively, use this for stricter rules
+      tseslint.configs.strictTypeChecked,
+      // Optionally, add this for stylistic rules
+      tseslint.configs.stylisticTypeChecked,
+
+      // Other configs...
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
 ```
 
-Откройте в браузере указанный в терминале адрес (обычно `http://localhost:5173`).
+You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
 
-## Требования к Tilda API
+```js
+// eslint.config.js
+import reactX from 'eslint-plugin-react-x'
+import reactDom from 'eslint-plugin-react-dom'
 
-- Тариф [Tilda Business Plan](https://tilda.cc/pricing/).
-- Ключи: **Site Settings → Export → API Integration** (Public Key и Secret Key).
-- Лимит: 150 запросов в час.
-
-## Репозиторий
-
-[https://github.com/Horosheff/Tilda](https://github.com/Horosheff/Tilda)
-
-## Ссылки
-
-- [Tilda API](https://help.tilda.cc/api)
-- [Tilda Help Center](https://help.tilda.cc/)
-- [Tilda Zero Block](https://help.tilda.cc/zero)
+export default defineConfig([
+  globalIgnores(['dist']),
+  {
+    files: ['**/*.{ts,tsx}'],
+    extends: [
+      // Other configs...
+      // Enable lint rules for React
+      reactX.configs['recommended-typescript'],
+      // Enable lint rules for React DOM
+      reactDom.configs.recommended,
+    ],
+    languageOptions: {
+      parserOptions: {
+        project: ['./tsconfig.node.json', './tsconfig.app.json'],
+        tsconfigRootDir: import.meta.dirname,
+      },
+      // other options...
+    },
+  },
+])
+```

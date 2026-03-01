@@ -1,0 +1,161 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 360px;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: #f8fafc;
+      color: #1e293b;
+      -webkit-font-smoothing: antialiased;
+    }
+    .header {
+      background: linear-gradient(135deg, #4f46e5, #7c3aed);
+      padding: 20px;
+      color: white;
+    }
+    .header h1 {
+      font-size: 18px;
+      font-weight: 700;
+      margin-bottom: 4px;
+    }
+    .header p {
+      font-size: 12px;
+      opacity: 0.85;
+    }
+    .content {
+      padding: 16px;
+    }
+    .field {
+      margin-bottom: 16px;
+    }
+    .field label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: #64748b;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 6px;
+    }
+    .field input {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #e2e8f0;
+      border-radius: 8px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+    }
+    .field input:focus {
+      border-color: #4f46e5;
+      box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+    }
+    .btn {
+      width: 100%;
+      padding: 10px;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.2s;
+    }
+    .btn-primary {
+      background: #4f46e5;
+      color: white;
+    }
+    .btn-primary:hover {
+      background: #4338ca;
+    }
+    .btn-primary:disabled {
+      background: #94a3b8;
+      cursor: not-allowed;
+    }
+    .status {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 8px;
+      font-size: 13px;
+      margin-top: 12px;
+    }
+    .status.connected {
+      background: #f0fdf4;
+      color: #166534;
+    }
+    .status.disconnected {
+      background: #fef2f2;
+      color: #991b1b;
+    }
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+    }
+    .dot.green { background: #22c55e; }
+    .dot.red { background: #ef4444; }
+    .link {
+      display: block;
+      text-align: center;
+      margin-top: 12px;
+      font-size: 12px;
+      color: #6366f1;
+      text-decoration: none;
+    }
+    .link:hover { text-decoration: underline; }
+    .instructions {
+      margin-top: 16px;
+      padding: 12px;
+      background: #f1f5f9;
+      border-radius: 8px;
+      font-size: 12px;
+      color: #475569;
+      line-height: 1.5;
+    }
+    .instructions h3 {
+      font-size: 12px;
+      font-weight: 600;
+      margin-bottom: 6px;
+      color: #334155;
+    }
+    .instructions ol {
+      padding-left: 16px;
+    }
+    .instructions li {
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <div class="header">
+    <h1>✨ Tilda Space AI</h1>
+    <p>Генерация блоков с помощью Gemini AI</p>
+  </div>
+  <div class="content">
+    <div class="field">
+      <label>Gemini API Key</label>
+      <input type="password" id="apiKey" placeholder="AIza...">
+    </div>
+    <button class="btn btn-primary" id="saveBtn" disabled>Сохранить</button>
+    <div id="status"></div>
+    <a class="link" href="https://aistudio.google.com/apikey" target="_blank">
+      Получить API ключ →
+    </a>
+    <div class="instructions">
+      <h3>Как использовать</h3>
+      <ol>
+        <li>Получите API ключ Gemini и сохраните его выше</li>
+        <li>Откройте редактор страницы в Tilda</li>
+        <li>Нажмите кнопку ✨ в правом нижнем углу</li>
+        <li>Опишите нужный блок или страницу</li>
+        <li>Скопируйте HTML и вставьте в блок T123</li>
+      </ol>
+    </div>
+  </div>
+  <script src="popup.js"></script>
+</body>
+</html>
