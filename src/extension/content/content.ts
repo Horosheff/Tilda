@@ -327,164 +327,206 @@ class TildaSpaceAI {
     }
   }
 
+  private findByText(selector: string, text: string): HTMLElement | null {
+    const els = document.querySelectorAll(selector);
+    for (const el of els) {
+      const t = (el as HTMLElement).innerText?.trim().toLowerCase() || '';
+      if (t.includes(text.toLowerCase())) return el as HTMLElement;
+    }
+    return null;
+  }
+
+  private async waitForElement(finder: () => HTMLElement | null, timeoutMs = 5000): Promise<HTMLElement | null> {
+    const start = Date.now();
+    while (Date.now() - start < timeoutMs) {
+      const el = finder();
+      if (el) return el;
+      await this.wait(200);
+    }
+    return null;
+  }
+
+  private simulateClick(el: HTMLElement) {
+    el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    el.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+    el.dispatchEvent(new MouseEvent('mouseup', { bubbles: true, cancelable: true }));
+    el.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+  }
+
   private async tryInsertBlock(): Promise<boolean> {
     try {
-      const addBtnSelectors = [
-        '.tn-add-block-btn',
-        '[data-tooltip="Добавить блок"]',
-        '.tn-add__btn',
-        '#record-add-block',
-        '.record__add-btn',
-        'button[class*="add-block"]',
-        'a[class*="add-block"]',
-        '.add_block_link',
-        '.tn-editor__add-btn',
-      ];
+      // Step 1: Click "Все блоки" to open block catalog
+      this.showInsertStatus(`<div class="ts-insert-progress"><div class="ts-spinner" style="width:16px;height:16px;border-width:2px;"></div> 1/6 Открываю каталог блоков...</div>`);
 
-      let addBtn: HTMLElement | null = null;
-      for (const sel of addBtnSelectors) {
-        addBtn = document.querySelector(sel);
-        if (addBtn) break;
-      }
+      const allBlocksBtn = this.findByText('a, button, div, span', 'все блоки');
+      if (!allBlocksBtn) return false;
+      this.simulateClick(allBlocksBtn);
+      await this.wait(1200);
 
-      if (!addBtn) {
-        const allBtns = document.querySelectorAll('a, button, div[class*="add"]');
-        for (const el of allBtns) {
-          const text = (el as HTMLElement).innerText?.toLowerCase() || '';
-          const cls = (el as HTMLElement).className?.toLowerCase() || '';
-          if (text.includes('добавить') || text.includes('все блоки') ||
-              cls.includes('add-block') || cls.includes('addblock')) {
-            addBtn = el as HTMLElement;
-            break;
+      // Step 2: Find and click "Другое" category in the sidebar
+      this.showInsertStatus(`<div class="ts-insert-progress"><div class="ts-spinner" style="width:16px;height:16px;border-width:2px;"></div> 2/6 Открываю категорию "Другое"...</div>`);
+
+      const otherCategory = await this.waitForElement(
+        () => this.findByText('a, div, li, span', 'другое'),
+        3000
+      );
+      if (!otherCategory) return false;
+      this.simulateClick(otherCategory);
+      await this.wait(1200);
+
+      // Step 3: Find and click T123 HTML block
+      this.showInsertStatus(`<div class="ts-insert-progress"><div class="ts-spinner" style="width:16px;height:16px;border-width:2px;"></div> 3/6 Добавляю блок HTML (T123)...</div>`);
+
+      const htmlBlock = await this.waitForElement(() => {
+        const candidates = document.querySelectorAll('a, div, li, img, span, [class*="block"]');
+        for (const el of candidates) {
+          const text = (el as HTMLElement).innerText?.trim() || '';
+          if (text === 'HTML-код' || text.startsWith('T123')) {
+            return el as HTMLElement;
           }
+        }
+        return null;
+      }, 3000);
+
+      if (!htmlBlock) return false;
+      this.simulateClick(htmlBlock);
+      await this.wait(2000);
+
+      // Step 4: Close catalog sidebar if still open, then select the block
+      this.showInsertStatus(`<div class="ts-insert-progress"><div class="ts-spinner" style="width:16px;height:16px;border-width:2px;"></div> 4/6 Выбираю блок...</div>`);
+
+      // Press Escape to close any overlay/sidebar
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', code: 'Escape', bubbles: true }));
+      await this.wait(800);
+
+      // Find the newly added block on the page by looking for Tilda's record elements
+      const records = document.querySelectorAll('[id^="rec"]');
+      let blockRecord: HTMLElement | null = null;
+      for (const rec of records) {
+        const text = (rec as HTMLElement).innerText || '';
+        if (text.includes('Код будет выполнен') || text.includes('embedcode') || text.includes('<html>')) {
+          blockRecord = rec as HTMLElement;
+          break;
         }
       }
 
-      const allBlocksBtn = document.querySelector('.tn-add__blocks-btn') ||
-                          document.querySelector('[data-filter="all"]') ||
-                          document.querySelector('.tn-add__tab_active');
-
-      if (allBlocksBtn) {
-        (allBlocksBtn as HTMLElement).click();
-        await this.wait(500);
-      }
-
-      const htmlBlockSelectors = [
-        '[data-block-id="T123"]',
-        '[data-block="T123"]',
-        '[data-name="T123"]',
-        '.tn-add__block[data-block-id="T123"]',
-      ];
-
-      let htmlBlock: HTMLElement | null = null;
-      for (const sel of htmlBlockSelectors) {
-        htmlBlock = document.querySelector(sel);
-        if (htmlBlock) break;
-      }
-
-      if (!htmlBlock) {
-        const otherTab = document.querySelector('[data-filter="other"]') ||
-                         document.querySelector('.tn-add__tab[data-filter="other"]');
-        if (otherTab) {
-          (otherTab as HTMLElement).click();
-          await this.wait(500);
-          for (const sel of htmlBlockSelectors) {
-            htmlBlock = document.querySelector(sel);
-            if (htmlBlock) break;
-          }
-        }
-      }
-
-      if (!htmlBlock) {
-        const blockElements = document.querySelectorAll('[data-block-id], [data-block]');
-        for (const el of blockElements) {
-          const blockId = (el as HTMLElement).dataset.blockId || (el as HTMLElement).dataset.block || '';
-          const text = (el as HTMLElement).innerText || '';
-          if (blockId === 'T123' || blockId.toLowerCase().includes('html') ||
-              text.toLowerCase().includes('html') || text === 'T123') {
-            htmlBlock = el as HTMLElement;
-            break;
-          }
-        }
-      }
-
-      if (htmlBlock) {
-        htmlBlock.click();
+      if (blockRecord) {
+        this.simulateClick(blockRecord);
         await this.wait(1000);
+      }
 
-        const contentBtnSelectors = [
-          '.tn-popup__btn-content',
-          'button[data-action="content"]',
-          '.tn-editor-block__btn-content',
-          '[class*="btn-content"]',
-          '[class*="content-btn"]',
-        ];
+      // Step 5: Find and click "Контент" button
+      this.showInsertStatus(`<div class="ts-insert-progress"><div class="ts-spinner" style="width:16px;height:16px;border-width:2px;"></div> 5/6 Открываю редактор кода...</div>`);
 
-        let contentBtn: HTMLElement | null = null;
-        for (const sel of contentBtnSelectors) {
-          contentBtn = document.querySelector(sel);
-          if (contentBtn) break;
-        }
-
-        if (!contentBtn) {
-          const btns = document.querySelectorAll('button, a, div[role="button"]');
-          for (const el of btns) {
-            const text = (el as HTMLElement).innerText?.toLowerCase() || '';
-            if (text.includes('контент') || text.includes('content') || text.includes('редактировать')) {
-              contentBtn = el as HTMLElement;
-              break;
+      const contentBtn = await this.waitForElement(() => {
+        // Look specifically for the block toolbar "Контент" button
+        const btns = document.querySelectorAll('a, button, div, span');
+        for (const el of btns) {
+          const text = (el as HTMLElement).innerText?.trim();
+          if (text === 'Контент' || text === 'контент') {
+            const rect = (el as HTMLElement).getBoundingClientRect();
+            if (rect.width > 20 && rect.height > 10) {
+              return el as HTMLElement;
             }
           }
         }
+        return null;
+      }, 3000);
 
-        if (contentBtn) {
-          contentBtn.click();
-          await this.wait(800);
-
-          const codeEditors = document.querySelectorAll(
-            'textarea, .CodeMirror, [contenteditable="true"], .ace_editor, .code-editor textarea'
-          );
-
-          for (const editor of codeEditors) {
-            if (editor instanceof HTMLTextAreaElement) {
-              editor.focus();
-              editor.value = this.generatedHtml;
-              editor.dispatchEvent(new Event('input', { bubbles: true }));
-              editor.dispatchEvent(new Event('change', { bubbles: true }));
-              return true;
-            }
-
-            const cmInstance = (editor as HTMLElement & { CodeMirror?: { setValue: (v: string) => void } }).CodeMirror;
-            if (cmInstance) {
-              cmInstance.setValue(this.generatedHtml);
-              return true;
-            }
-
-            if ((editor as HTMLElement).getAttribute('contenteditable') === 'true') {
-              (editor as HTMLElement).innerHTML = this.escapeHtml(this.generatedHtml);
-              (editor as HTMLElement).dispatchEvent(new Event('input', { bubbles: true }));
-              return true;
-            }
-          }
-
-          document.execCommand('selectAll');
-          document.execCommand('insertText', false, this.generatedHtml);
-          return true;
+      if (!contentBtn) {
+        // Maybe the block needs to be hovered/clicked again
+        if (blockRecord) {
+          blockRecord.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+          await this.wait(500);
+          this.simulateClick(blockRecord);
+          await this.wait(1000);
         }
+        // Try finding "Контент" again
+        const retry = this.findByText('a, button, div, span', 'контент');
+        if (!retry) return false;
+        this.simulateClick(retry);
+      } else {
+        this.simulateClick(contentBtn);
+      }
+      await this.wait(2000);
 
-        return true;
+      // Step 6: Find the HTML code textarea/editor and paste content
+      this.showInsertStatus(`<div class="ts-insert-progress"><div class="ts-spinner" style="width:16px;height:16px;border-width:2px;"></div> 6/6 Вставляю HTML код...</div>`);
+
+      const pasted = await this.pasteIntoEditor();
+      if (!pasted) return false;
+
+      await this.wait(800);
+
+      // Click "Сохранить и закрыть"
+      const saveCloseBtn = this.findByText('a, button, div, span', 'сохранить и закрыть');
+      if (saveCloseBtn) {
+        this.simulateClick(saveCloseBtn);
+        await this.wait(1500);
+      } else {
+        const saveBtn = this.findByText('a, button, div, span', 'сохранить');
+        if (saveBtn) {
+          this.simulateClick(saveBtn);
+          await this.wait(1500);
+        }
       }
 
-      if (addBtn) {
-        addBtn.click();
-        await this.wait(800);
-        return false;
-      }
-
-      return false;
+      return true;
     } catch {
       return false;
     }
+  }
+
+  private async pasteIntoEditor(): Promise<boolean> {
+    // Wait a bit for the editor to fully render
+    await this.wait(500);
+
+    // Try CodeMirror first (Tilda uses CodeMirror for code editing)
+    const cmElements = document.querySelectorAll('.CodeMirror');
+    for (const cmEl of cmElements) {
+      const cm = (cmEl as HTMLElement & { CodeMirror?: { setValue: (v: string) => void } }).CodeMirror;
+      if (cm) {
+        cm.setValue(this.generatedHtml);
+        return true;
+      }
+    }
+
+    // Try all visible textareas
+    const textareas = document.querySelectorAll('textarea');
+    for (const ta of textareas) {
+      const rect = ta.getBoundingClientRect();
+      if (rect.width > 50 && rect.height > 20) {
+        ta.focus();
+        // Use native setter to bypass any framework wrappers
+        const nativeInputValueSetter = Object.getOwnPropertyDescriptor(
+          HTMLTextAreaElement.prototype, 'value'
+        )?.set;
+        if (nativeInputValueSetter) {
+          nativeInputValueSetter.call(ta, this.generatedHtml);
+        } else {
+          ta.value = this.generatedHtml;
+        }
+        ta.dispatchEvent(new Event('input', { bubbles: true }));
+        ta.dispatchEvent(new Event('change', { bubbles: true }));
+        ta.dispatchEvent(new Event('blur', { bubbles: true }));
+        return true;
+      }
+    }
+
+    // Try contenteditable elements
+    const editables = document.querySelectorAll('[contenteditable="true"]');
+    for (const el of editables) {
+      const htmlEl = el as HTMLElement;
+      const rect = htmlEl.getBoundingClientRect();
+      if (rect.width > 50 && rect.height > 20) {
+        htmlEl.focus();
+        htmlEl.innerText = this.generatedHtml;
+        htmlEl.dispatchEvent(new Event('input', { bubbles: true }));
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private wait(ms: number): Promise<void> {
