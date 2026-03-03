@@ -24,6 +24,17 @@ Rules:
 - Always include at least a heading and some content.
 - Make the design look professional and modern.`;
 
+const TEMPLATE_INSTRUCTION = `
+
+IMPORTANT - REFERENCE TEMPLATE:
+The user provided HTML of a reference page below. You MUST:
+- Extract the visual style: colors (hex), typography, spacing, button style, section layout.
+- Reuse that design system in your JSON (primaryColor, secondaryColor, etc. from the reference).
+- Match the structure and block types if the reference has hero, features, CTA, footer etc.
+- Return ONLY a valid JSON array. No markdown, no explanation.`;
+
+const MAX_TEMPLATE_CHARS = 12000;
+
 let genAI: GoogleGenerativeAI | null = null;
 
 export function initGemini(apiKey: string) {
@@ -34,17 +45,26 @@ export function isGeminiInitialized(): boolean {
   return genAI !== null;
 }
 
-export async function generatePageBlocks(prompt: string): Promise<Block[]> {
+export async function generatePageBlocks(prompt: string, templateHtml?: string): Promise<Block[]> {
   if (!genAI) {
     throw new Error('Gemini API not initialized. Please set your API key.');
   }
 
   const model = genAI.getGenerativeModel({ model: 'gemini-3.1-pro-preview' });
 
-  const result = await model.generateContent([
+  const parts: Array<{ text: string }> = [
     { text: SYSTEM_PROMPT },
     { text: `Generate a page for: ${prompt}` },
-  ]);
+  ];
+
+  if (templateHtml?.trim()) {
+    const truncated = templateHtml.trim().length > MAX_TEMPLATE_CHARS
+      ? templateHtml.trim().slice(0, MAX_TEMPLATE_CHARS) + '\n...[truncated]'
+      : templateHtml.trim();
+    parts.push({ text: TEMPLATE_INSTRUCTION + '\n\nREFERENCE PAGE HTML:\n' + truncated });
+  }
+
+  const result = await model.generateContent(parts);
 
   const response = result.response;
   const text = response.text().trim();

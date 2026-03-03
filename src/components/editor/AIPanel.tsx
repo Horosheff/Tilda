@@ -2,10 +2,13 @@ import { useState } from 'react';
 import { Sparkles, Loader2, Key, AlertCircle } from 'lucide-react';
 import { usePageStore } from '../../store/pageStore';
 import { initGemini, generatePageBlocks, isGeminiInitialized } from '../../services/geminiService';
+import { KV_AI_TEMPLATE_HTML } from '../../templates/kv-ai-reference';
 
 export default function AIPanel() {
   const [apiKey, setApiKey] = useState('');
   const [prompt, setPrompt] = useState('');
+  const [templateHtml, setTemplateHtml] = useState('');
+  const [showTemplate, setShowTemplate] = useState(false);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const [connected, setConnected] = useState(false);
@@ -25,7 +28,7 @@ export default function AIPanel() {
     setLoading(true);
     setError('');
     try {
-      const blocks = await generatePageBlocks(prompt);
+      const blocks = await generatePageBlocks(prompt, templateHtml.trim() || undefined);
       if (mode === 'replace') {
         setBlocks(blocks);
       } else {
@@ -102,6 +105,38 @@ export default function AIPanel() {
           rows={4}
           disabled={loading}
         />
+
+        <div className="border border-gray-200 rounded-lg overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setShowTemplate((s) => !s)}
+            className="w-full px-3 py-2 text-left text-xs font-medium text-gray-600 bg-gray-50 hover:bg-gray-100 flex items-center justify-between"
+          >
+            <span>Эталонная страница (шаблон)</span>
+            <span className="text-gray-400">{showTemplate ? '▼' : '▶'}</span>
+          </button>
+          {showTemplate && (
+            <>
+              <div className="px-3 py-1.5 border-t border-gray-200 bg-gray-50/50 flex flex-wrap gap-1.5">
+                <button
+                  type="button"
+                  onClick={() => { setTemplateHtml(KV_AI_TEMPLATE_HTML); }}
+                  className="text-xs px-2 py-1 rounded bg-indigo-100 text-indigo-700 hover:bg-indigo-200"
+                >
+                  Стиль kv-ai.ru
+                </button>
+              </div>
+              <textarea
+              value={templateHtml}
+              onChange={(e) => setTemplateHtml(e.target.value)}
+              placeholder="Вставьте HTML готовой страницы с Tilda — ИИ создаст похожий стиль и структуру.&#10;Скопировать: откройте страницу в браузере → ПКМ → «Просмотреть код» → скопируйте нужный фрагмент или экспортируйте через Настройки сайта → Экспорт."
+              className="w-full px-3 py-2 text-sm border-0 border-t border-gray-200 rounded-none focus:ring-2 focus:ring-indigo-500 outline-none resize-y min-h-[80px] font-mono text-xs"
+              rows={4}
+              disabled={loading}
+            />
+            </>
+          )}
+        </div>
 
         {error && (
           <div className="flex items-start gap-2 p-2 bg-red-50 text-red-600 text-xs rounded-lg">

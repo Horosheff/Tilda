@@ -4,158 +4,508 @@
   <meta charset="UTF-8">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      min-width: 800px;
+      min-height: 600px;
+    }
     body {
-      width: 360px;
       font-family: 'Inter', system-ui, -apple-system, sans-serif;
       background: #f8fafc;
       color: #1e293b;
       -webkit-font-smoothing: antialiased;
+      overflow-y: auto;
     }
     .header {
-      background: linear-gradient(135deg, #4f46e5, #7c3aed);
-      padding: 20px;
+      background: linear-gradient(135deg, #694be8, #8167f0);
+      padding: 20px 24px;
       color: white;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 3px solid #e9cc57;
     }
     .header h1 {
-      font-size: 18px;
+      font-size: 20px;
       font-weight: 700;
       margin-bottom: 4px;
     }
     .header p {
-      font-size: 12px;
-      opacity: 0.85;
+      font-size: 13px;
+      opacity: 0.9;
     }
     .content {
-      padding: 16px;
+      padding: 20px 24px;
+      max-width: 1200px;
     }
-    .field {
+
+    /* API Key Section */
+    .api-section {
+      background: white;
+      border: 2px solid #694be8;
+      border-radius: 12px;
+      padding: 16px;
       margin-bottom: 16px;
     }
-    .field label {
+    .api-section label {
       display: block;
       font-size: 12px;
       font-weight: 600;
-      color: #64748b;
+      color: #694be8;
       text-transform: uppercase;
       letter-spacing: 0.5px;
-      margin-bottom: 6px;
+      margin-bottom: 8px;
     }
-    .field input {
+    .api-section input {
       width: 100%;
       padding: 10px 12px;
-      border: 1px solid #e2e8f0;
+      border: 2px solid #e2e8f0;
       border-radius: 8px;
       font-size: 14px;
       outline: none;
-      transition: border-color 0.2s;
     }
-    .field input:focus {
-      border-color: #4f46e5;
-      box-shadow: 0 0 0 3px rgba(79,70,229,0.1);
+    .api-section input:focus {
+      border-color: #694be8;
     }
-    .btn {
-      width: 100%;
+    .api-row {
+      display: flex;
+      gap: 12px;
+      margin-top: 12px;
+    }
+    .api-row .btn {
+      flex: 1;
+    }
+    .api-row .link {
+      flex: 1;
+      text-align: center;
       padding: 10px;
-      border: none;
+      font-size: 13px;
+      color: #694be8;
+      text-decoration: none;
+      border: 2px solid #694be8;
       border-radius: 8px;
-      font-size: 14px;
       font-weight: 600;
-      cursor: pointer;
-      transition: all 0.2s;
     }
-    .btn-primary {
-      background: #4f46e5;
-      color: white;
+    .api-row .link:hover { background: #f1f5f9; }
+
+    /* Prompt Section */
+    .prompt-section {
+      margin-bottom: 16px;
     }
-    .btn-primary:hover {
-      background: #4338ca;
+    .prompt-section textarea {
+      width: 100%;
+      min-height: 80px;
+      padding: 12px;
+      border: 2px solid #e2e8f0;
+      border-radius: 12px;
+      font-size: 14px;
+      font-family: inherit;
+      resize: vertical;
+      outline: none;
     }
-    .btn-primary:disabled {
-      background: #94a3b8;
-      cursor: not-allowed;
+    .prompt-section textarea:focus {
+      border-color: #694be8;
+      box-shadow: 0 0 0 3px rgba(105, 75, 232, 0.1);
     }
-    .status {
+
+    /* Presets */
+    .presets {
+      margin-bottom: 16px;
+      background: white;
+      border: 2px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 16px;
+      border-left: 4px solid #e9cc57;
+    }
+    .presets-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: #694be8;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+      margin-bottom: 12px;
       display: flex;
       align-items: center;
       gap: 8px;
-      padding: 10px 12px;
-      border-radius: 8px;
-      font-size: 13px;
-      margin-top: 12px;
     }
-    .status.connected {
+    .presets-title::before {
+      content: "✨";
+      font-size: 16px;
+    }
+    .presets-grid {
+      display: grid;
+      grid-template-columns: repeat(2, 1fr);
+      gap: 10px;
+    }
+    .preset-btn {
+      display: block;
+      width: 100%;
+      text-align: left;
+      padding: 14px 16px;
+      background: linear-gradient(135deg, #f8fafc, #ffffff);
+      border: 2px solid #e2e8f0;
+      border-radius: 10px;
+      font-size: 14px;
+      font-weight: 500;
+      color: #475569;
+      cursor: pointer;
+      font-family: inherit;
+      transition: all 0.2s;
+    }
+    .preset-btn:hover {
+      background: linear-gradient(135deg, #694be8, #8167f0);
+      border-color: #694be8;
+      color: white;
+      transform: translateY(-2px);
+      box-shadow: 0 4px 12px rgba(105, 75, 232, 0.3);
+    }
+    .preset-btn:active {
+      transform: translateY(0);
+    }
+    .preset-desc {
+      font-size: 11px;
+      color: #64748b;
+      margin-top: 4px;
+      font-weight: 400;
+    }
+    .preset-btn:hover .preset-desc {
+      color: rgba(255, 255, 255, 0.9);
+    }
+
+    /* Template Button */
+    .template-row {
+      display: flex;
+      gap: 12px;
+      align-items: center;
+      margin-bottom: 16px;
+    }
+    .template-btn {
+      flex: 1;
+      padding: 12px 16px;
+      font-size: 13px;
+      font-weight: 600;
+      border: 2px dashed #694be8;
+      border-radius: 10px;
+      background: white;
+      color: #694be8;
+      cursor: pointer;
+      font-family: inherit;
+    }
+    .template-btn:hover { background: #f8fafc; }
+    .template-status {
+      font-size: 13px;
+      color: #166534;
+      font-weight: 500;
+    }
+
+    /* Generate Button */
+    .btn {
+      width: 100%;
+      padding: 16px;
+      border: none;
+      border-radius: 12px;
+      font-size: 16px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: all 0.2s;
+      font-family: inherit;
+    }
+    .btn-primary {
+      background: linear-gradient(135deg, #694be8, #8167f0);
+      color: white;
+      border: 3px solid #e9cc57;
+      box-shadow: 0 4px 15px rgba(105, 75, 232, 0.3);
+    }
+    .btn-primary:hover { 
+      transform: translateY(-2px);
+      box-shadow: 0 6px 20px rgba(105, 75, 232, 0.4);
+    }
+    .btn-primary:disabled {
+      background: #94a3b8;
+      border-color: #94a3b8;
+      cursor: not-allowed;
+      transform: none;
+    }
+    .btn-secondary {
+      background: white;
+      border: 2px solid #694be8;
+      color: #694be8;
+      margin-top: 10px;
+    }
+    .btn-secondary:hover { background: #f8fafc; }
+
+    /* Log Section */
+    .log-section {
+      margin-top: 16px;
+      border: 2px solid #e2e8f0;
+      border-radius: 12px;
+      overflow: hidden;
+      background: white;
+      border-left: 4px solid #e9cc57;
+    }
+    .log-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 12px 16px;
+      background: linear-gradient(135deg, #f8fafc, #ffffff);
+      border-bottom: 2px solid #e2e8f0;
+      font-size: 13px;
+      font-weight: 700;
+      color: #694be8;
+    }
+    .log-toggle {
+      background: linear-gradient(135deg, #694be8, #8167f0);
+      border: none;
+      color: white;
+      font-size: 12px;
+      cursor: pointer;
+      padding: 6px 12px;
+      border-radius: 6px;
+      font-weight: 600;
+    }
+    .log-content {
+      max-height: 250px;
+      overflow-y: auto;
+      padding: 12px 16px;
+      font-family: 'JetBrains Mono', 'Fira Code', monospace;
+      font-size: 12px;
+      line-height: 1.5;
+      background: #fafafa;
+    }
+    .log-content.collapsed { display: none; }
+    .log-msg { color: #475569; margin-bottom: 4px; }
+    .log-err { color: #dc2626; margin-bottom: 4px; font-weight: 600; }
+    .log-placeholder { color: #94a3b8; font-style: italic; }
+
+    /* Results Section */
+    .results-section {
+      margin-top: 16px;
+    }
+    .results-title {
+      font-size: 16px;
+      font-weight: 700;
+      color: #694be8;
+      margin-bottom: 12px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .results-title::before {
+      content: "🎨";
+    }
+    .block-item {
+      background: white;
+      border: 2px solid #e2e8f0;
+      border-radius: 12px;
+      padding: 14px 16px;
+      margin-bottom: 12px;
+      border-left: 4px solid #694be8;
+    }
+    .block-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 12px;
+    }
+    .block-type {
+      font-size: 14px;
+      font-weight: 700;
+      color: #694be8;
+    }
+    .block-status {
+      font-size: 12px;
+      color: #166534;
+      font-weight: 600;
+      background: #f0fdf4;
+      padding: 4px 10px;
+      border-radius: 6px;
+    }
+    .block-actions {
+      display: flex;
+      gap: 10px;
+    }
+    .block-actions button {
+      flex: 1;
+      padding: 10px;
+      font-size: 12px;
+      border: 2px solid #e2e8f0;
+      border-radius: 8px;
+      background: #f8fafc;
+      cursor: pointer;
+      font-family: inherit;
+      font-weight: 600;
+    }
+    .block-actions button:hover { 
+      background: #f1f5f9; 
+      border-color: #694be8;
+      color: #694be8;
+    }
+    .block-actions button.primary {
+      background: linear-gradient(135deg, #694be8, #8167f0);
+      color: white;
+      border-color: #694be8;
+    }
+    .block-actions button.primary:hover {
+      box-shadow: 0 4px 12px rgba(105, 75, 232, 0.3);
+    }
+
+    /* Status */
+    .status-bar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      margin-bottom: 16px;
+      font-weight: 600;
+    }
+    .status-bar.ok {
       background: #f0fdf4;
       color: #166534;
+      border: 2px solid #bbf7d0;
     }
-    .status.disconnected {
+    .status-bar.error {
       background: #fef2f2;
       color: #991b1b;
+      border: 2px solid #fecaca;
+    }
+    .status-bar.warning {
+      background: #fff7ed;
+      color: #9a3412;
+      border: 2px solid #fed7aa;
     }
     .dot {
-      width: 8px;
-      height: 8px;
+      width: 10px;
+      height: 10px;
       border-radius: 50%;
     }
     .dot.green { background: #22c55e; }
     .dot.red { background: #ef4444; }
-    .link {
-      display: block;
-      text-align: center;
-      margin-top: 12px;
-      font-size: 12px;
-      color: #6366f1;
-      text-decoration: none;
+    .dot.yellow { background: #f59e0b; }
+
+    /* Spinner */
+    .spinner {
+      width: 18px;
+      height: 18px;
+      border: 3px solid #e2e8f0;
+      border-top-color: #694be8;
+      border-radius: 50%;
+      animation: spin 0.6s linear infinite;
+      display: inline-block;
+      vertical-align: middle;
+      margin-right: 8px;
     }
-    .link:hover { text-decoration: underline; }
-    .instructions {
-      margin-top: 16px;
-      padding: 12px;
-      background: #f1f5f9;
-      border-radius: 8px;
-      font-size: 12px;
-      color: #475569;
-      line-height: 1.5;
-    }
-    .instructions h3 {
-      font-size: 12px;
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* Error / Success messages */
+    .message {
+      padding: 12px 16px;
+      border-radius: 10px;
+      font-size: 13px;
+      margin-bottom: 16px;
       font-weight: 600;
-      margin-bottom: 6px;
-      color: #334155;
     }
-    .instructions ol {
-      padding-left: 16px;
+    .message.error {
+      background: #fef2f2;
+      border: 2px solid #fecaca;
+      color: #991b1b;
     }
-    .instructions li {
-      margin-bottom: 4px;
+    .message.success {
+      background: #f0fdf4;
+      border: 2px solid #bbf7d0;
+      color: #166534;
     }
   </style>
 </head>
 <body>
   <div class="header">
     <h1>✨ Tilda Space AI</h1>
-    <p>Генерация блоков с помощью Gemini AI</p>
+    <p>Генерация блоков для Tilda в стиле kv-ai.ru</p>
   </div>
+
   <div class="content">
-    <div class="field">
-      <label>Gemini API Key</label>
+    <!-- API Key -->
+    <div class="api-section">
+      <label>🔑 Gemini API Key</label>
       <input type="password" id="apiKey" placeholder="AIza...">
+      <div class="api-row">
+        <button class="btn" id="saveKeyBtn" style="background: linear-gradient(135deg, #694be8, #8167f0); color: white; border: none;">Сохранить ключ</button>
+        <a class="link" href="https://aistudio.google.com/apikey" target="_blank">Получить ключ →</a>
+      </div>
     </div>
-    <button class="btn btn-primary" id="saveBtn" disabled>Сохранить</button>
-    <div id="status"></div>
-    <a class="link" href="https://aistudio.google.com/apikey" target="_blank">
-      Получить API ключ →
-    </a>
-    <div class="instructions">
-      <h3>Как использовать</h3>
-      <ol>
-        <li>Получите API ключ Gemini и сохраните его выше</li>
-        <li>Откройте редактор страницы в Tilda</li>
-        <li>Нажмите кнопку ✨ в правом нижнем углу</li>
-        <li>Опишите нужный блок или страницу</li>
-        <li>Скопируйте HTML и вставьте в блок T123</li>
-      </ol>
+
+    <!-- Status -->
+    <div id="statusBar" class="status-bar warning" style="display: none;">
+      <span class="dot yellow"></span>
+      <span id="statusText">Введите API ключ</span>
     </div>
+
+    <!-- Prompt -->
+    <div class="prompt-section">
+      <textarea id="prompt" placeholder="Опишите сайт, который нужно создать...&#10;Например: Лендинг для кофейни с уютной атмосферой, меню, фото и контактами"></textarea>
+    </div>
+
+    <!-- Presets -->
+    <div class="presets">
+      <div class="presets-title">Готовые сценарии (нажмите для выбора)</div>
+      <div class="presets-grid">
+        <button class="preset-btn" data-preset="kvai" style="border-color: #694be8; background: linear-gradient(135deg, #f3f0ff, #ffffff);">
+          🔮 KV-AI Style
+          <div class="preset-desc">Фиолетовый #694be8 + желтый #e9cc57</div>
+        </button>
+        <button class="preset-btn" data-preset="startup">
+          🚀 IT-стартап
+          <div class="preset-desc">Тёмный минималистичный стиль</div>
+        </button>
+        <button class="preset-btn" data-preset="cafe">
+          ☕ Кофейня
+          <div class="preset-desc">Тёплый кремовый уютный</div>
+        </button>
+        <button class="preset-btn" data-preset="portfolio">
+          🎨 Портфолио
+          <div class="preset-desc">Светлый чистый стиль</div>
+        </button>
+        <button class="preset-btn" data-preset="fitness">
+          💪 Фитнес-клуб
+          <div class="preset-desc">Яркий энергичный дизайн</div>
+        </button>
+      </div>
+    </div>
+
+    <!-- Template -->
+    <div class="template-row">
+      <button class="template-btn" id="useTemplateBtn" style="display: none;">📄 Текущая страница как шаблон</button>
+      <span class="template-status" id="templateStatus"></span>
+    </div>
+
+    <!-- Generate -->
+    <button class="btn btn-primary" id="generateBtn" disabled>🤖 Запустить агентов</button>
+
+    <!-- Log -->
+    <div class="log-section">
+      <div class="log-header">
+        <span>📋 Лог выполнения</span>
+        <button class="log-toggle" id="logToggle">Скрыть</button>
+      </div>
+      <div class="log-content" id="logContent">
+        <span class="log-placeholder">Нажмите "Запустить агентов" для начала генерации</span>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div class="results-section" id="resultsSection" style="display: none;">
+      <div class="results-title">Сгенерированные блоки</div>
+      <div id="blocksList"></div>
+      <button class="btn btn-secondary" id="copyAllBtn">📋 Копировать все HTML</button>
+    </div>
+
+    <!-- Error / Success messages -->
+    <div id="message" style="display: none;"></div>
   </div>
+
   <script src="popup.js"></script>
 </body>
 </html>

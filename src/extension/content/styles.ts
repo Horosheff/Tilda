@@ -8,25 +8,26 @@ export const PANEL_CSS = `
     width: 56px;
     height: 56px;
     border-radius: 50%;
-    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    background: linear-gradient(135deg, #694be8, #8167f0);
     color: white;
-    border: none;
+    border: 3px solid #e9cc57;
     cursor: pointer;
     font-size: 24px;
     display: flex;
     align-items: center;
     justify-content: center;
-    box-shadow: 0 4px 20px rgba(79,70,229,0.4);
+    box-shadow: 0 4px 20px rgba(105,75,232,0.4);
     transition: all 0.3s ease;
     z-index: 2147483647;
   }
   .ts-fab:hover {
     transform: scale(1.1);
-    box-shadow: 0 6px 28px rgba(79,70,229,0.5);
+    box-shadow: 0 6px 28px rgba(105,75,232,0.5);
   }
   .ts-fab.active {
     transform: rotate(45deg) scale(1.1);
     background: #ef4444;
+    border-color: #ef4444;
   }
 
   .ts-panel {
@@ -37,7 +38,7 @@ export const PANEL_CSS = `
     max-height: calc(100vh - 120px);
     background: #ffffff;
     border-radius: 16px;
-    box-shadow: 0 8px 40px rgba(0,0,0,0.15), 0 0 0 1px rgba(0,0,0,0.05);
+    box-shadow: 0 8px 40px rgba(0,0,0,0.15), 0 0 0 2px rgba(105,75,232,0.2);
     z-index: 2147483646;
     display: none;
     flex-direction: column;
@@ -57,8 +58,9 @@ export const PANEL_CSS = `
 
   .ts-header {
     padding: 16px 20px;
-    background: linear-gradient(135deg, #4f46e5, #7c3aed);
+    background: linear-gradient(135deg, #694be8, #8167f0);
     color: white;
+    border-bottom: 3px solid #e9cc57;
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -140,6 +142,103 @@ export const PANEL_CSS = `
   }
   .ts-prompt-area textarea::placeholder { color: #94a3b8; }
 
+  .ts-template-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 12px;
+  }
+  .ts-template-btn {
+    padding: 6px 10px;
+    font-size: 12px;
+    border: 1px solid #e2e8f0;
+    border-radius: 6px;
+    background: #f8fafc;
+    color: #475569;
+    cursor: pointer;
+  }
+  .ts-template-btn:hover { background: #f1f5f9; color: #334155; }
+  .ts-template-status { font-size: 12px; color: #64748b; }
+  .ts-template-set { color: #166534; }
+  .ts-template-clear {
+    margin-left: 6px;
+    padding: 2px 6px;
+    font-size: 11px;
+    border: none;
+    background: transparent;
+    color: #6366f1;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+  .ts-template-clear:hover { color: #4f46e5; }
+
+  .ts-mode-row {
+    margin-bottom: 12px;
+  }
+  .ts-mode-label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: 13px;
+    color: #475569;
+    cursor: pointer;
+  }
+  .ts-mode-label input[type="checkbox"] {
+    accent-color: #694be8;
+    width: 16px;
+    height: 16px;
+  }
+
+  .ts-recorder-row {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    margin-bottom: 10px;
+    padding: 10px 12px;
+    background: #fef3c7;
+    border: 1px solid #f59e0b;
+    border-radius: 8px;
+  }
+  .ts-recorder-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #92400e;
+  }
+  .ts-recorder-btns {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+  .ts-recorder-start, .ts-recorder-stop, .ts-recorder-copy, .ts-recorder-copy-steps {
+    padding: 6px 10px;
+    font-size: 12px;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .ts-recorder-start {
+    background: #22c55e;
+    color: white;
+  }
+  .ts-recorder-start:hover:not(:disabled) { background: #16a34a; }
+  .ts-recorder-stop {
+    background: #ef4444;
+    color: white;
+  }
+  .ts-recorder-stop:hover:not(:disabled) { background: #dc2626; }
+  .ts-recorder-copy {
+    background: #f59e0b;
+    color: white;
+  }
+  .ts-recorder-copy:hover:not(:disabled) { background: #d97706; }
+  .ts-recorder-copy-steps { background: #0891b2; }
+  .ts-recorder-copy-steps:hover:not(:disabled) { background: #0e7490; }
+  .ts-recorder-start:disabled, .ts-recorder-stop:disabled, .ts-recorder-copy:disabled, .ts-recorder-copy-steps:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+
   .ts-generate-btn {
     width: 100%;
     padding: 10px;
@@ -189,6 +288,18 @@ export const PANEL_CSS = `
     background: #eef2ff;
     border-color: #c7d2fe;
     color: #4338ca;
+  }
+
+  .ts-suggestion-kvai {
+    background: linear-gradient(135deg, #f3f0ff, #ffffff);
+    border-color: #694be8;
+    color: #694be8;
+    font-weight: 600;
+  }
+  .ts-suggestion-kvai:hover {
+    background: linear-gradient(135deg, #694be8, #8167f0) !important;
+    color: white !important;
+    border-color: #694be8 !important;
   }
 
   .ts-result {
@@ -361,11 +472,111 @@ export const PANEL_CSS = `
     width: 20px;
     height: 20px;
     border: 2px solid #e2e8f0;
-    border-top-color: #4f46e5;
+    border-top-color: #694be8;
     border-radius: 50%;
     animation: ts-spin 0.6s linear infinite;
   }
   @keyframes ts-spin {
     to { transform: rotate(360deg); }
+  }
+
+  #ts-agent-log {
+    margin-top: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .ts-agent-phase {
+    background: #f8fafc;
+    border: 1px solid #e2e8f0;
+    border-left: 3px solid #694be8;
+    border-radius: 8px;
+    padding: 12px;
+  }
+  .ts-agent-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: #1e293b;
+    margin-bottom: 6px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .ts-agent-status {
+    font-size: 12px;
+    color: #475569;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+  .ts-agent-success {
+    color: #166534;
+    font-weight: 500;
+    margin-top: 4px;
+    display: block;
+  }
+  .ts-agent-error {
+    color: #dc2626;
+    font-weight: 500;
+    margin-top: 4px;
+    display: block;
+  }
+  .ts-design-preview {
+    margin-top: 8px;
+    padding: 8px;
+    background: #ffffff;
+    border-radius: 6px;
+    border: 1px solid #e2e8f0;
+  }
+  .ts-color-row {
+    display: flex;
+    gap: 6px;
+    margin-bottom: 8px;
+  }
+  .ts-color-dot {
+    width: 16px;
+    height: 16px;
+    border-radius: 50%;
+    border: 1px solid rgba(0,0,0,0.1);
+  }
+  .ts-plan-blocks {
+    font-size: 11px;
+    color: #475569;
+    word-break: break-word;
+  }
+  .ts-agent-phase.done {
+    border-left-color: #22c55e;
+  }
+
+  .ts-debug-section {
+    margin-top: 16px;
+    border-top: 1px dashed #e2e8f0;
+    padding-top: 12px;
+  }
+  .ts-debug-toggle {
+    background: none;
+    border: none;
+    color: #64748b;
+    font-size: 12px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 0;
+  }
+  .ts-debug-toggle:hover {
+    color: #1e293b;
+  }
+  .ts-debug-log {
+    margin-top: 8px;
+    background: #1e293b;
+    color: #e2e8f0;
+    font-family: 'JetBrains Mono', 'Fira Code', monospace;
+    font-size: 11px;
+    padding: 10px;
+    border-radius: 6px;
+    max-height: 200px;
+    overflow-y: auto;
+    line-height: 1.5;
   }
 `;
