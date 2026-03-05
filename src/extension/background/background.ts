@@ -1,140 +1,50 @@
-// ─── Design System Types ───
+import {
+  AGENT_ANIM_PLAN_ADDON,
+  AGENT_ORCHESTRATOR_PROMPT,
+  AGENT_ORCHESTRATOR_TEMPLATE_ADDON,
+  callGemini,
+  extractHtmlText,
+  extractJsonText,
+} from '../shared/aiRuntime';
+import type {
+  AnimationOptions,
+  AgentPlan,
+  BlockPlan,
+  DesignSystem,
+} from '../shared/aiRuntime';
+import { runBlockWorker } from './blockWorker';
+import type { BlockWorkerInput } from './blockWorker';
 
-interface DesignSystem {
-  primaryColor: string;
-  secondaryColor: string;
-  accentColor: string;
-  bgLight: string;
-  bgDark: string;
-  textColor: string;
-  textMuted: string;
-  fontFamily: string;
-  headingStyle: string;
-  buttonStyle: string;
-  borderRadius: string;
-  sectionPadding: string;
+type BlockAgentStatus = 'queued' | 'running' | 'retrying' | 'success' | 'error';
+
+interface BlockAgentJob {
+  jobId: string;
+  planId?: string;
+  blockIndex: number;
+  blockType: string;
+  status: BlockAgentStatus;
+  attempts: number;
+  maxRetries: number;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  nextRetryAt?: number;
+  html?: string;
+  error?: string;
+  input: BlockWorkerInput;
 }
 
-interface BlockPlan {
-  type: string;
-  description: string;
-}
-
-interface AgentPlan {
-  designSystem: DesignSystem;
-  blocks: BlockPlan[];
-}
-
-// ─── System Prompts ───
-
-const ORCHESTRATOR_PROMPT = `You are a web design orchestrator AI. Given a user request for a website page, you must:
-
-1. Create a DESIGN SYSTEM (color palette, typography, spacing, button styles) that will be shared across ALL blocks
-2. Plan the page structure as a list of blocks
-
-Return a JSON object with this EXACT structure (no markdown, no code fences):
-{
-  "designSystem": {
-    "primaryColor": "#hex",
-    "secondaryColor": "#hex",
-    "accentColor": "#hex",
-    "bgLight": "#hex (light background for alternating sections)",
-    "bgDark": "#hex (dark background for hero/CTA)",
-    "textColor": "#hex (main text)",
-    "textMuted": "#hex (secondary text)",
-    "fontFamily": "'Inter', system-ui, -apple-system, sans-serif",
-    "headingStyle": "font-weight: 800; letter-spacing: -0.02em;",
-    "buttonStyle": "padding: 16px 40px; border-radius: 12px; font-weight: 600; font-size: 16px;",
-    "borderRadius": "16px",
-    "sectionPadding": "100px 20px"
-  },
-  "blocks": [
-    { "type": "hero", "description": "..." },
-    { "type": "features", "description": "..." },
-    { "type": "about", "description": "..." },
-    { "type": "testimonials", "description": "..." },
-    { "type": "cta", "description": "..." },
-    { "type": "footer", "description": "..." }
-  ]
-}
-
-Rules:
-- Choose a COHESIVE, PREMIUM color palette. Think Stripe, Linear, Vercel.
-- Plan 4-7 blocks depending on the request.
-- Each block description should be detailed: content, layout, specific elements.
-- For Russian prompts, write descriptions in Russian.
-- Return ONLY the JSON. No explanation.`;
-
-function makeBlockPrompt(ds: DesignSystem, block: BlockPlan, blockIndex: number, totalBlocks: number): string {
-  return `You are a block-level web designer agent. You are generating block ${blockIndex + 1} of ${totalBlocks} for a page.
-
-DESIGN SYSTEM (you MUST follow this exactly):
-- Primary: ${ds.primaryColor}
-- Secondary: ${ds.secondaryColor}  
-- Accent: ${ds.accentColor}
-- Light bg: ${ds.bgLight}
-- Dark bg: ${ds.bgDark}
-- Text: ${ds.textColor}
-- Muted text: ${ds.textMuted}
-- Font: ${ds.fontFamily}
-- Headings: ${ds.headingStyle}
-- Buttons: ${ds.buttonStyle}
-- Border radius: ${ds.borderRadius}
-- Section padding: ${ds.sectionPadding}
-
-BLOCK TO GENERATE:
-Type: ${block.type}
-Description: ${block.description}
-
-RULES:
-- Return ONLY raw HTML. No markdown, no code fences, no explanation.
-- CRITICAL: All tags MUST be properly closed (every <div> has </div>, <p> has </p>, etc.). Tilda rejects invalid HTML.
-- Use INLINE CSS for ALL styles. No <style> tags, no classes.
-- Use the EXACT colors and styles from the design system above.
-- Wrap in a single <div> with full-width.
-- Make it responsive (max-width, %, flexbox, clamp()).
-- Use real Unsplash URLs for images: https://images.unsplash.com/photo-{id}?w=800&q=80
-- Content in Russian if the description is in Russian.
-- This block must look like it belongs to a cohesive, professional page.`;
-}
-
-// ─── API Call Helper ───
-
-async function callGemini(apiKey: string, prompt: string, systemPrompt?: string): Promise<string> {
-  const parts = [];
-  if (systemPrompt) parts.push({ text: systemPrompt });
-  parts.push({ text: prompt });
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          temperature: 0.85,
-          maxOutputTokens: 8192,
-        },
-      }),
-    }
-  );
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Gemini API (${response.status}): ${err}`);
-  }
-
-  const data = await response.json();
-  const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return text.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
-}
+const blockJobRegistry = new Map<string, BlockAgentJob>();
+const BLOCK_AGENT_MAX_RETRIES = 3;
+const BLOCK_AGENT_RETRY_DELAY_MS = 5000;
 
 // ─── Message Handlers ───
 
 interface Message {
   type: string;
   prompt?: string;
+  jobId?: string;
+  planId?: string;
 }
 
 chrome.runtime.onMessage.addListener(
@@ -148,17 +58,68 @@ chrome.runtime.onMessage.addListener(
     }
 
     if (message.type === 'AGENT_PLAN') {
-      const templateHtml = (message as Message & { templateHtml?: string }).templateHtml;
-      handleAgentPlan(message.prompt || '', templateHtml)
+      const msg = message as Message & { templateHtml?: string; animOptions?: AnimationOptions };
+      handleAgentPlan(message.prompt || '', msg.templateHtml, msg.animOptions)
         .then((plan) => sendResponse({ success: true, plan }))
         .catch((err: Error) => sendResponse({ success: false, error: err.message }));
       return true;
     }
 
     if (message.type === 'AGENT_BLOCK') {
-      const msg = message as Message & { designSystem: DesignSystem; block: BlockPlan; blockIndex: number; totalBlocks: number };
-      handleAgentBlock(msg.designSystem, msg.block, msg.blockIndex, msg.totalBlocks)
+      const msg = message as Message & { designSystem: DesignSystem; block: BlockPlan; blockIndex: number; totalBlocks: number; animOptions?: AnimationOptions };
+      handleAgentBlock(msg.designSystem, msg.block, msg.blockIndex, msg.totalBlocks, msg.animOptions)
         .then((html) => sendResponse({ success: true, html }))
+        .catch((err: Error) => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+
+    if (message.type === 'START_BLOCK_AGENT') {
+      const msg = message as Message & {
+        planId?: string;
+        designSystem: DesignSystem;
+        block: BlockPlan;
+        blockIndex: number;
+        totalBlocks: number;
+        animOptions?: AnimationOptions;
+      };
+
+      startBlockAgentJob({
+        planId: msg.planId,
+        designSystem: msg.designSystem,
+        block: msg.block,
+        blockIndex: msg.blockIndex,
+        totalBlocks: msg.totalBlocks,
+        animOptions: msg.animOptions,
+      })
+        .then((job) => sendResponse({ success: true, job }))
+        .catch((err: Error) => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+
+    if (message.type === 'GET_BLOCK_AGENT_STATUS') {
+      const job = message.jobId ? getBlockAgentSnapshot(message.jobId) : null;
+      sendResponse(job ? { success: true, job } : { success: false, error: 'Block agent job not found' });
+      return false;
+    }
+
+    if (message.type === 'GET_BLOCK_AGENT_RESULT') {
+      const job = message.jobId ? getBlockAgentResult(message.jobId) : null;
+      sendResponse(job ? { success: true, job } : { success: false, error: 'Block agent result not found' });
+      return false;
+    }
+
+    if (message.type === 'GENERATE_SVG_ICON') {
+      const msg = message as Message & { prompt: string; size?: number };
+      handleGenerateSvgIcon(msg.prompt || '', msg.size || 48)
+        .then((svg) => sendResponse({ success: true, svg }))
+        .catch((err: Error) => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+
+    if (message.type === 'GENERATE_SVG_ANIMATION') {
+      const msg = message as Message & { prompt: string };
+      handleGenerateSvgAnimation(msg.prompt || '')
+        .then((svg) => sendResponse({ success: true, svg }))
         .catch((err: Error) => sendResponse({ success: false, error: err.message }));
       return true;
     }
@@ -170,11 +131,17 @@ chrome.runtime.onMessage.addListener(
       return true;
     }
 
+    if (message.type === 'OPEN_POPUP') {
+      chrome.tabs.create({ url: chrome.runtime.getURL('popup.html') });
+      sendResponse({ success: true });
+      return true;
+    }
+
     const runCdpSequence = (tabId: number, cmds: Array<{ method: string; params: Record<string, unknown> }>, done: () => void) => {
       let i = 0;
       const run = () => {
         if (i >= cmds.length) {
-          chrome.debugger.detach({ tabId }, () => {});
+          chrome.debugger.detach({ tabId }, () => { });
           done();
           return;
         }
@@ -226,43 +193,44 @@ chrome.runtime.onMessage.addListener(
           target: { tabId: tabs[0].id, allFrames: true },
           world: 'MAIN',
           func: (h: string) => {
-          try {
-            const pres = document.querySelectorAll('pre[id^="aceeditor"]');
-            const els = document.querySelectorAll('.ace_editor');
-            if (pres.length === 0 && els.length === 0) return false;
-            const w = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : {});
-            const ace = (w as Record<string, unknown>).ace || (typeof (globalThis as Record<string, unknown>).ace !== 'undefined' ? (globalThis as Record<string, unknown>).ace : null);
-            const pickByMaxId = (arr: NodeListOf<Element>) => {
-              let best: Element | null = null;
-              let maxId = 0;
-              for (let i = 0; i < arr.length; i++) {
-                const el = arr[i];
-                const id = el.id || (el.closest?.('pre[id^="aceeditor"]') as Element)?.id || '';
-                const m = id.match(/aceeditor(\d+)/);
-                const num = m ? parseInt(m[1], 10) : 0;
-                const r = (el as HTMLElement).getBoundingClientRect?.();
-                if (num > maxId && r && r.width > 80 && r.height > 80) { best = el; maxId = num; }
+            try {
+              const pres = document.querySelectorAll('pre[id^="aceeditor"]');
+              const els = document.querySelectorAll('.ace_editor');
+              if (pres.length === 0 && els.length === 0) return false;
+              const w = typeof window !== 'undefined' ? window : (typeof globalThis !== 'undefined' ? globalThis : {});
+              const ace = (w as Record<string, unknown>).ace || (typeof (globalThis as Record<string, unknown>).ace !== 'undefined' ? (globalThis as Record<string, unknown>).ace : null);
+              const pickByMaxId = (arr: NodeListOf<Element>) => {
+                let best: Element | null = null;
+                let maxId = 0;
+                for (let i = 0; i < arr.length; i++) {
+                  const el = arr[i];
+                  const id = el.id || (el.closest?.('pre[id^="aceeditor"]') as Element)?.id || '';
+                  const m = id.match(/aceeditor(\d+)/);
+                  const num = m ? parseInt(m[1], 10) : 0;
+                  const r = (el as HTMLElement).getBoundingClientRect?.();
+                  if (num > maxId && r && r.width > 80 && r.height > 80) { best = el; maxId = num; }
+                }
+                return best || (arr.length > 0 ? arr[arr.length - 1] : null);
+              };
+              const pre = pickByMaxId(pres) as HTMLPreElement | null;
+              const el = pickByMaxId(els);
+              if (pre && pre.id && ace && typeof (ace as { edit: (x: string) => { setValue: (v: string) => void } }).edit === 'function') {
+                const ed = (ace as { edit: (x: string) => { setValue: (v: string) => void } }).edit(pre.id);
+                if (ed && typeof ed.setValue === 'function') { ed.setValue(h); return true; }
               }
-              return best || (arr.length > 0 ? arr[arr.length - 1] : null);
-            };
-            const pre = pickByMaxId(pres) as HTMLPreElement | null;
-            const el = pickByMaxId(els);
-            if (pre && pre.id && ace && typeof (ace as { edit: (x: string) => { setValue: (v: string) => void } }).edit === 'function') {
-              const ed = (ace as { edit: (x: string) => { setValue: (v: string) => void } }).edit(pre.id);
-              if (ed && typeof ed.setValue === 'function') { ed.setValue(h); return true; }
-            }
-            if (el) {
-              const aceEl = el as HTMLElement & { aceEditor?: { setValue: (v: string) => void }; env?: { editor?: { setValue: (v: string) => void } } };
-              if (aceEl.aceEditor?.setValue) { aceEl.aceEditor.setValue(h); return true; }
-              if (aceEl.env?.editor?.setValue) { aceEl.env.editor.setValue(h); return true; }
-              if (ace && typeof (ace as { edit: (x: Element) => { setValue: (v: string) => void } }).edit === 'function') {
-                const ed = (ace as { edit: (x: Element) => { setValue: (v: string) => void } }).edit(el);
-                if (ed?.setValue) { ed.setValue(h); return true; }
+              if (el) {
+                const aceEl = el as HTMLElement & { aceEditor?: { setValue: (v: string) => void }; env?: { editor?: { setValue: (v: string) => void } } };
+                if (aceEl.aceEditor?.setValue) { aceEl.aceEditor.setValue(h); return true; }
+                if (aceEl.env?.editor?.setValue) { aceEl.env.editor.setValue(h); return true; }
+                if (ace && typeof (ace as { edit: (x: Element) => { setValue: (v: string) => void } }).edit === 'function') {
+                  const ed = (ace as { edit: (x: Element) => { setValue: (v: string) => void } }).edit(el);
+                  if (ed?.setValue) { ed.setValue(h); return true; }
+                }
               }
-            }
-          } catch (_) {}
-          return false;
-        }, args: [html] })
+            } catch (_) { }
+            return false;
+          }, args: [html]
+        })
           .then((r) => sendResponse({ ok: (r && r.some((f) => f?.result === true)) || false }))
           .catch(() => sendResponse({ ok: false }));
       });
@@ -280,39 +248,201 @@ async function getApiKey(): Promise<string> {
 
 async function handleSingleBlock(prompt: string): Promise<string> {
   const apiKey = await getApiKey();
-  return callGemini(apiKey, prompt, `You are a web designer. Generate clean HTML with inline CSS. Return ONLY HTML. No markdown. Use Russian text for Russian prompts. Professional design.`);
+  const model = await getStoredModel();
+  const raw = await callGemini(apiKey, prompt, {
+    systemPrompt: 'You are a professional Tilda HTML developer. Return ONLY valid HTML for one block. Use inline CSS, production-friendly markup, and visible readable text.',
+    temperature: 0.35,
+    maxOutputTokens: 8192,
+    model,
+  });
+  return extractHtmlText(raw);
 }
 
-const ORCHESTRATOR_TEMPLATE_ADDON = `
+const SVG_ICON_SYSTEM = `You are an SVG icon designer. Generate a single inline SVG icon with SMIL or CSS animation.
+- Return ONLY raw SVG code. No markdown, no code fences, no explanation.
+- viewBox="0 0 SIZE SIZE" where SIZE is 24, 32, or 48.
+- Use <animate>, <animateTransform>, <animateMotion> for real SVG animations.
+- Colors: pick yourself. No external resources. Self-contained SVG.`;
 
-IMPORTANT - REFERENCE TEMPLATE:
-The user provided HTML of a reference page below. You MUST:
-- Extract the visual style from it: colors (hex), typography, spacing, button style.
-- Put those colors into your designSystem (primaryColor, secondaryColor, accentColor, bgLight, bgDark, textColor, textMuted).
-- Match the structure: if the reference has hero, features, CTA, footer — plan similar blocks.
-- Return ONLY the JSON. No explanation.`;
+const SVG_ANIMATION_SYSTEM = `You are an SVG animation artist. Generate an ANIMATED SVG — a real animated illustration or graphic.
+- Return ONLY raw SVG code. No markdown, no code fences, no explanation.
+- Use <animate>, <animateTransform>, <animateMotion> for SVG-native animations. Can also use <style> with @keyframes.
+- Create an actual animated picture: moving elements, morphing shapes, flowing gradients, pulsing effects.
+- Size: 200–600px. Colors: pick yourself. Self-contained SVG.`;
+
+async function handleGenerateSvgIcon(description: string, size: number): Promise<string> {
+  const apiKey = await getApiKey();
+  const model = await getStoredModel();
+  const prompt = `Create an SVG icon: ${description}\n\nSize: ${size}x${size}. Return ONLY the <svg>...</svg> element.`;
+  const raw = await callGemini(apiKey, prompt, { systemPrompt: SVG_ICON_SYSTEM, temperature: 0.4, maxOutputTokens: 4096, model });
+  const match = raw.match(/<svg[\s\S]*?<\/svg>/i);
+  return match ? match[0] : raw.trim();
+}
+
+async function handleGenerateSvgAnimation(description: string): Promise<string> {
+  const apiKey = await getApiKey();
+  const model = await getStoredModel();
+  const prompt = `Create an animated SVG: ${description}\n\nReturn ONLY the <svg>...</svg> element with animations inside.`;
+  const raw = await callGemini(apiKey, prompt, { systemPrompt: SVG_ANIMATION_SYSTEM, temperature: 0.45, maxOutputTokens: 4096, model });
+  const match = raw.match(/<svg[\s\S]*?<\/svg>/i);
+  return match ? match[0] : raw.trim();
+}
 
 const MAX_TEMPLATE_CHARS = 12000;
 
-async function handleAgentPlan(prompt: string, templateHtml?: string): Promise<AgentPlan> {
+async function handleAgentPlan(prompt: string, templateHtml?: string, animOpts?: AnimationOptions): Promise<AgentPlan> {
   const apiKey = await getApiKey();
-  let systemPrompt = ORCHESTRATOR_PROMPT;
-  let userPrompt = prompt;
+  const model = await getStoredModel();
+  let systemPrompt = AGENT_ORCHESTRATOR_PROMPT;
+  let userPrompt = `USER REQUEST:\n${prompt}`;
   if (templateHtml?.trim()) {
-    systemPrompt = ORCHESTRATOR_PROMPT + ORCHESTRATOR_TEMPLATE_ADDON;
+    systemPrompt = AGENT_ORCHESTRATOR_PROMPT + AGENT_ORCHESTRATOR_TEMPLATE_ADDON;
     const truncated = templateHtml.trim().length > MAX_TEMPLATE_CHARS
       ? templateHtml.trim().slice(0, MAX_TEMPLATE_CHARS) + '\n...[truncated]'
       : templateHtml.trim();
-    userPrompt = prompt + '\n\nREFERENCE PAGE HTML:\n' + truncated;
+    userPrompt += '\n\nREFERENCE PAGE HTML:\n' + truncated;
   }
-  const raw = await callGemini(apiKey, userPrompt, systemPrompt);
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Не удалось разобрать план от оркестратора');
-  return JSON.parse(jsonMatch[0]) as AgentPlan;
+  const hasAnim = animOpts && (animOpts.staggerReveal || animOpts.cardLift || animOpts.glowHover || animOpts.textClip || animOpts.parallax);
+  if (hasAnim) userPrompt += AGENT_ANIM_PLAN_ADDON;
+  const raw = await callGemini(apiKey, userPrompt, {
+    systemPrompt,
+    temperature: 0.35,
+    maxOutputTokens: 4096,
+    model,
+  });
+  return JSON.parse(extractJsonText(raw)) as AgentPlan;
 }
 
-async function handleAgentBlock(ds: DesignSystem, block: BlockPlan, idx: number, total: number): Promise<string> {
+async function handleAgentBlock(ds: DesignSystem, block: BlockPlan, idx: number, total: number, animOpts?: AnimationOptions): Promise<string> {
   const apiKey = await getApiKey();
-  const prompt = makeBlockPrompt(ds, block, idx, total);
-  return callGemini(apiKey, block.description, prompt);
+  const model = await getStoredModel();
+  return runBlockWorker(apiKey, {
+    designSystem: ds,
+    block,
+    blockIndex: idx,
+    totalBlocks: total,
+    animOptions: animOpts,
+    model,
+  });
+}
+
+async function getStoredModel(): Promise<string> {
+  const result = await chrome.storage.local.get(['selectedModel']);
+  return (result as Record<string, string>).selectedModel || 'gemini-2.5-pro';
+}
+
+function isRetryableAgentError(err: string): boolean {
+  return /503|429|500|504|UNAVAILABLE|high demand|Resource exhausted|overloaded/i.test(err || '');
+}
+
+function toBlockAgentSnapshot(job: BlockAgentJob) {
+  return {
+    jobId: job.jobId,
+    planId: job.planId,
+    blockIndex: job.blockIndex,
+    blockType: job.blockType,
+    status: job.status,
+    attempts: job.attempts,
+    maxRetries: job.maxRetries,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    nextRetryAt: job.nextRetryAt,
+    error: job.error,
+  };
+}
+
+function getBlockAgentSnapshot(jobId: string) {
+  const job = blockJobRegistry.get(jobId);
+  return job ? toBlockAgentSnapshot(job) : null;
+}
+
+function getBlockAgentResult(jobId: string) {
+  const job = blockJobRegistry.get(jobId);
+  if (!job) return null;
+  return {
+    ...toBlockAgentSnapshot(job),
+    html: job.html,
+  };
+}
+
+async function startBlockAgentJob(args: {
+  planId?: string;
+  designSystem: DesignSystem;
+  block: BlockPlan;
+  blockIndex: number;
+  totalBlocks: number;
+  animOptions?: AnimationOptions;
+}) {
+  const model = await getStoredModel();
+  const jobId = crypto.randomUUID();
+  const job: BlockAgentJob = {
+    jobId,
+    planId: args.planId,
+    blockIndex: args.blockIndex,
+    blockType: args.block.type,
+    status: 'queued',
+    attempts: 0,
+    maxRetries: BLOCK_AGENT_MAX_RETRIES,
+    createdAt: Date.now(),
+    input: {
+      designSystem: args.designSystem,
+      block: args.block,
+      blockIndex: args.blockIndex,
+      totalBlocks: args.totalBlocks,
+      animOptions: args.animOptions,
+      model,
+    },
+  };
+
+  blockJobRegistry.set(jobId, job);
+  void runBlockAgentJob(jobId);
+  return toBlockAgentSnapshot(job);
+}
+
+async function runBlockAgentJob(jobId: string): Promise<void> {
+  const job = blockJobRegistry.get(jobId);
+  if (!job) return;
+
+  let apiKey = '';
+  try {
+    apiKey = await getApiKey();
+  } catch (err) {
+    job.status = 'error';
+    job.error = err instanceof Error ? err.message : String(err);
+    job.finishedAt = Date.now();
+    return;
+  }
+
+  while (job.attempts < job.maxRetries) {
+    job.attempts += 1;
+    job.status = job.attempts === 1 ? 'running' : 'retrying';
+    job.startedAt = job.startedAt || Date.now();
+    job.nextRetryAt = undefined;
+    job.error = undefined;
+
+    try {
+      const html = await runBlockWorker(apiKey, job.input);
+      job.status = 'success';
+      job.html = html;
+      job.finishedAt = Date.now();
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      job.error = message;
+
+      if (job.attempts >= job.maxRetries || !isRetryableAgentError(message)) {
+        job.status = 'error';
+        job.finishedAt = Date.now();
+        return;
+      }
+
+      job.status = 'retrying';
+      job.nextRetryAt = Date.now() + BLOCK_AGENT_RETRY_DELAY_MS;
+      await new Promise((resolve) => setTimeout(resolve, BLOCK_AGENT_RETRY_DELAY_MS));
+    }
+  }
+
+  job.status = 'error';
+  job.finishedAt = Date.now();
 }

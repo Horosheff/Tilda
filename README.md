@@ -1,73 +1,96 @@
-# React + TypeScript + Vite
+# 🤖 Tilda Space AI
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+> Chrome-расширение для автоматической генерации посадочных страниц в Tilda с помощью Gemini AI
 
-Currently, two official plugins are available:
+![Chrome Extension](https://img.shields.io/badge/Chrome-Extension-4285F4?logo=google-chrome&logoColor=white)
+![Gemini AI](https://img.shields.io/badge/Gemini-AI-8E75B2?logo=google&logoColor=white)
+![TypeScript](https://img.shields.io/badge/TypeScript-5.x-3178C6?logo=typescript&logoColor=white)
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Babel](https://babeljs.io/) (or [oxc](https://oxc.rs) when used in [rolldown-vite](https://vite.dev/guide/rolldown)) for Fast Refresh
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/) for Fast Refresh
+---
 
-## React Compiler
+## ✨ Что умеет
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+- **Мастер-агент (Оркестратор)** — получает ваш промпт и составляет план страницы: дизайн-систему (цвета, шрифты, отступы) + список блоков с реальным русскоязычным контентом
+- **Параллельная генерация** — каждый блок генерируется отдельным AI-агентом одновременно, ускоряя процесс в разы
+- **Авто-вставка в Tilda** — готовый HTML автоматически вставляется прямо в редактор Tilda через T123 (HTML-блок)
+- **Выбор модели** — поддержка Gemini 2.0 Flash, 2.5 Pro, 3.1 Pro и других моделей
+- **SVG-генератор** — создание анимированных SVG-иконок и декоративных элементов
+- **Пресеты** — готовые шаблоны промптов для AI-сервисов, стартапов, кафе, портфолио, фитнеса
 
-## Expanding the ESLint configuration
+---
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+## 🏗️ Архитектура
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
-
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```
+popup.js          — UI + Оркестратор + Агенты блоков (параллельно)
+background.ts     — Service Worker: SVG-генерация, ACE-инъекция, CDP
+content.ts        — Взаимодействие с Tilda: поиск редактора, вставка HTML
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+**Флоу генерации:**
+1. Пользователь вводит промпт → Оркестратор создаёт JSON-план (дизайн-система + описания блоков с реальным текстом)
+2. Все блоки генерируются параллельно через `Promise.all`
+3. Пользователь нажимает «Вставить в Tilda» → content script открывает блок T123 и вставляет HTML в Ace Editor
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+---
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+## 🚀 Установка
+
+### 1. Сборка расширения
+
+```bash
+npm install
+npm run build:ext
 ```
+
+### 2. Загрузка в Chrome
+
+1. Открыть `chrome://extensions/`
+2. Включить **Режим разработчика**
+3. Нажать **Загрузить распакованное**
+4. Выбрать папку `dist-ext/`
+
+### 3. Настройка
+
+1. Открыть расширение (иконка в тулбаре)
+2. Вставить API-ключ Gemini ([получить здесь](https://aistudio.google.com/apikey))
+3. Выбрать модель
+4. Нажать **Сохранить**
+
+---
+
+## 💡 Использование
+
+1. Перейдите в редактор Tilda на свою страницу
+2. Откройте расширение
+3. Введите описание сайта (или выберите пресет)
+4. Нажмите **Запустить агентов**
+5. После генерации нажмите **Вставить в Tilda** для каждого блока
+
+---
+
+## 🛠️ Разработка
+
+```bash
+npm run dev          # Vite dev server
+npm run build:ext    # Сборка Chrome extension → dist-ext/
+npm run build        # Сборка web app → dist/
+```
+
+---
+
+## 📦 Стек
+
+| Технология | Назначение |
+|---|---|
+| TypeScript | Background + Content scripts |
+| JavaScript | Popup логика |
+| Gemini API | Генерация HTML-блоков и SVG |
+| Chrome Extensions API | Tabs, Storage, Scripting, Debugger |
+| Vite | Сборка проекта |
+
+---
+
+## 📄 Лицензия
+
+MIT © Horosheff
