@@ -57,15 +57,17 @@
       letter-spacing: 0.5px;
       margin-bottom: 8px;
     }
-    .api-section input {
+    .api-section input, .api-section select {
       width: 100%;
       padding: 10px 12px;
       border: 2px solid #e2e8f0;
       border-radius: 8px;
       font-size: 14px;
       outline: none;
+      font-family: inherit;
+      color: #1e293b;
     }
-    .api-section input:focus {
+    .api-section input:focus, .api-section select:focus {
       border-color: #694be8;
     }
     .api-row {
@@ -172,6 +174,25 @@
     .preset-btn:hover .preset-desc {
       color: rgba(255, 255, 255, 0.9);
     }
+
+    /* SVG Generator */
+    .svg-section {
+      background: linear-gradient(135deg, #f5f3ff, #faf5ff);
+      border: 1px solid #c4b5fd;
+      border-radius: 10px;
+      padding: 12px;
+      margin-bottom: 16px;
+    }
+    .svg-title { font-size: 12px; font-weight: 600; color: #6d28d9; margin-bottom: 8px; }
+    .svg-row { display: flex; gap: 8px; margin-bottom: 8px; }
+    .svg-input { flex: 1; padding: 8px 10px; font-size: 12px; border: 1px solid #c4b5fd; border-radius: 6px; }
+    .svg-btn { padding: 8px 14px; font-size: 12px; font-weight: 500; color: #6d28d9; background: #ede9fe; border: 1px solid #c4b5fd; border-radius: 6px; cursor: pointer; }
+    .svg-btn:hover { background: #ddd6fe; }
+    .svg-btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .svg-result { margin-top: 10px; padding-top: 10px; border-top: 1px solid #c4b5fd; }
+    .svg-preview { margin-bottom: 8px; padding: 12px; background: #fff; border-radius: 6px; max-height: 120px; overflow: auto; }
+    .svg-copy { padding: 6px 12px; font-size: 12px; background: #6d28d9; color: #fff; border: none; border-radius: 6px; cursor: pointer; }
+    .svg-copy:hover { background: #5b21b6; }
 
     /* Template Button */
     .template-row {
@@ -427,10 +448,20 @@
   </div>
 
   <div class="content">
-    <!-- API Key -->
+    <!-- API Key & Model -->
     <div class="api-section">
       <label>🔑 Gemini API Key</label>
       <input type="password" id="apiKey" placeholder="AIza...">
+      
+      <label style="margin-top: 12px;">🧠 AI Модель</label>
+      <select id="modelSelect">
+        <option value="gemini-2.5-pro" selected>Gemini 2.5 Pro (Умная, дефолт)</option>
+        <option value="gemini-2.5-flash">Gemini 2.5 Flash (Быстрая)</option>
+        <option value="gemini-2.5-flash-lite">Gemini 2.5 Flash Lite (Ультра-быстрая)</option>
+        <option value="gemini-3.1-pro-preview">Gemini 3.1 Pro Preview</option>
+        <option value="gemini-3-flash-preview">Gemini 3 Flash Preview</option>
+        <option value="gemini-expm-1207">Gemini Exptl 1207</option>
+      </select>
       <div class="api-row">
         <button class="btn" id="saveKeyBtn" style="background: linear-gradient(135deg, #694be8, #8167f0); color: white; border: none;">Сохранить ключ</button>
         <a class="link" href="https://aistudio.google.com/apikey" target="_blank">Получить ключ →</a>
@@ -472,6 +503,27 @@
           💪 Фитнес-клуб
           <div class="preset-desc">Яркий энергичный дизайн</div>
         </button>
+        <button class="preset-btn" data-preset="yandex" style="border-color: #2D7FF9; background: linear-gradient(135deg, #f0f7ff, #ffffff);">
+          📊 Yandex Metrika
+          <div class="preset-desc">Корпоративный стиль портала Яндекса</div>
+        </button>
+      </div>
+    </div>
+
+    <!-- SVG Generator -->
+    <div class="svg-section">
+      <div class="svg-title">🎨 SVG генератор</div>
+      <div class="svg-row">
+        <input type="text" id="svgIconInput" placeholder="Иконка" class="svg-input">
+        <button type="button" id="svgIconBtn" class="svg-btn">Иконка</button>
+      </div>
+      <div class="svg-row">
+        <input type="text" id="svgAnimInput" placeholder="Анимация" class="svg-input">
+        <button type="button" id="svgAnimBtn" class="svg-btn">Анимация</button>
+      </div>
+      <div class="svg-result" id="svgResult" style="display:none">
+        <div class="svg-preview" id="svgPreview"></div>
+        <button type="button" id="svgCopyBtn" class="svg-copy">📋 Копировать</button>
       </div>
     </div>
 

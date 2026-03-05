@@ -190,6 +190,156 @@ export const PANEL_CSS = `
     height: 16px;
   }
 
+  .ts-anim-header {
+    margin-bottom: 12px;
+    padding-bottom: 10px;
+    border-bottom: 1px solid #bae6fd;
+  }
+  .ts-anim-header-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #0369a1;
+    margin-bottom: 8px;
+  }
+  .ts-anim-presets {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+  }
+  .ts-anim-preset {
+    padding: 4px 10px;
+    font-size: 11px;
+    font-weight: 500;
+    color: #0369a1;
+    background: #e0f2fe;
+    border: 1px solid #7dd3fc;
+    border-radius: 6px;
+    cursor: pointer;
+    transition: background .2s, border-color .2s;
+  }
+  .ts-anim-preset:hover {
+    background: #bae6fd;
+  }
+  .ts-anim-preset.active {
+    background: #0284c7;
+    color: #fff;
+    border-color: #0284c7;
+  }
+  .ts-anim-group {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: #f0f9ff;
+    border: 1px solid #7dd3fc;
+    border-radius: 8px;
+  }
+  .ts-anim-group-title {
+    display: block;
+    font-size: 11px;
+    font-weight: 600;
+    color: #0c4a6e;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 8px;
+  }
+  .ts-anim-row {
+    margin-bottom: 12px;
+    padding: 10px 12px;
+    background: #f0f9ff;
+    border: 1px solid #7dd3fc;
+    border-radius: 8px;
+  }
+  .ts-anim-title {
+    display: block;
+    font-size: 12px;
+    font-weight: 600;
+    color: #0369a1;
+    margin-bottom: 8px;
+  }
+  .ts-anim-checks {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px 16px;
+  }
+  .ts-anim-label {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: #0c4a6e;
+    cursor: pointer;
+  }
+  .ts-anim-label input[type="checkbox"] {
+    accent-color: #0284c7;
+    width: 14px;
+    height: 14px;
+  }
+
+  .ts-svg-row {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    margin-bottom: 12px;
+    padding: 12px 14px;
+    background: linear-gradient(135deg, #f5f3ff, #faf5ff);
+    border: 1px solid #c4b5fd;
+    border-radius: 8px;
+  }
+  .ts-svg-title {
+    font-size: 12px;
+    font-weight: 600;
+    color: #6d28d9;
+    margin-bottom: 4px;
+  }
+  .ts-svg-section {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+  }
+  .ts-svg-label {
+    font-size: 11px;
+    font-weight: 500;
+    color: #7c3aed;
+  }
+  .ts-svg-input {
+    padding: 8px 10px;
+    font-size: 12px;
+    border: 1px solid #c4b5fd;
+    border-radius: 6px;
+    background: #fff;
+  }
+  .ts-svg-btn {
+    padding: 6px 12px;
+    font-size: 12px;
+    font-weight: 500;
+    color: #6d28d9;
+    background: #ede9fe;
+    border: 1px solid #c4b5fd;
+    border-radius: 6px;
+    cursor: pointer;
+    align-self: flex-start;
+  }
+  .ts-svg-btn:hover { background: #ddd6fe; }
+  .ts-svg-result {
+    margin-top: 8px;
+    padding-top: 10px;
+    border-top: 1px solid #c4b5fd;
+  }
+  .ts-svg-preview {
+    margin-bottom: 8px;
+    overflow: auto;
+    max-height: 180px;
+  }
+  .ts-svg-copy {
+    padding: 6px 12px;
+    font-size: 11px;
+    background: #6d28d9;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+  .ts-svg-copy:hover { background: #5b21b6; }
+
   .ts-recorder-row {
     display: flex;
     flex-direction: column;
@@ -300,6 +450,30 @@ export const PANEL_CSS = `
     background: linear-gradient(135deg, #694be8, #8167f0) !important;
     color: white !important;
     border-color: #694be8 !important;
+  }
+
+  .ts-suggestion-yandex {
+    background: linear-gradient(135deg, #f0f7ff, #ffffff);
+    border-color: #2D7FF9;
+    color: #1a5bb5;
+    font-weight: 600;
+  }
+  .ts-suggestion-yandex:hover {
+    background: linear-gradient(135deg, #2D7FF9, #4d94ff) !important;
+    color: white !important;
+    border-color: #2D7FF9 !important;
+  }
+
+  .ts-suggestion-svg {
+    background: linear-gradient(135deg, #f5f3ff, #faf5ff);
+    border-color: #8b5cf6;
+    color: #6d28d9;
+    font-weight: 600;
+  }
+  .ts-suggestion-svg:hover {
+    background: linear-gradient(135deg, #8b5cf6, #a78bfa) !important;
+    color: white !important;
+    border-color: #8b5cf6 !important;
   }
 
   .ts-result {
