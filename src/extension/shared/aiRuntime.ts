@@ -73,13 +73,7 @@ DESIGN TASTE REQUIREMENTS:
 - Use composition intentionally: split hero, bento rhythm, layered content, staggered cards, contrast between dense and airy sections, alternating section energy.
 
 TYPOGRAPHY REQUIREMENT:
-Choose a pairing from this style universe and reflect it in the JSON:
-- Modern tech: Space Grotesk + Inter
-- Editorial luxury: Manrope + Inter
-- Product clarity: Sora + Inter
-- Elegant premium: Syne + Inter
-- Neutral enterprise: Inter + Inter
-- Sharp contemporary: Outfit + Inter
+Choose an appropriate typography pairing that matches the brand tone (e.g., from Google Fonts) and reflect it in the JSON.
 
 2026 SEO / AEO / GEO REQUIREMENTS:
 - Think beyond keywords: optimize for entities, questions, topical clarity, and citation-worthiness in AI answers.
@@ -105,12 +99,7 @@ FOR EACH BLOCK DESCRIPTION, INCLUDE:
 - what SEO/AEO/GEO role this block plays: entity intro, trust proof, answer snippet, FAQ coverage, comparison, process clarity, etc.
 
 FOR EACH BLOCK TYPE:
-- hero: H1 headline (5-10 words), subheadline (15-28 words), 1-2 CTA buttons, 1-2 trust badges, visual concept, hierarchy, composition
-- features: section title, 3-6 feature cards, each with icon direction, feature name, 1-2 sentence benefit, layout rhythm
-- benefits/about: section title, persuasive paragraphs, 2-4 proof points or stats, art direction note
-- testimonials/cases: 2-3 testimonials or cases with name/company/result, plus how they should be visually arranged
-- pricing/cta: headline, subtext, button label, reassurance/urgency line, composition note
-- footer: company name, 2-3 link groups, copyright, footer mood and density
+Plan the necessary elements for the specific block type (e.g., headlines, paragraphs, cards, buttons, media logic) and explicitly describe the visual layout rhythm, hierarchy, and composition. Do not constrain yourself to typical block layouts; invent new layouts when appropriate.
 
 Return ONLY this JSON (no markdown, no code fences, no explanation):
 {
@@ -122,31 +111,27 @@ Return ONLY this JSON (no markdown, no code fences, no explanation):
     "bgDark": "#hex",
     "textColor": "#hex",
     "textMuted": "#hex",
-    "fontFamily": "'Inter', system-ui, sans-serif",
-    "headingFontFamily": "'Space Grotesk', 'Inter', system-ui, sans-serif",
-    "bodyFontFamily": "'Inter', system-ui, sans-serif",
-    "typographyPairName": "Space Grotesk + Inter",
-    "headingStyle": "font-weight: 800; letter-spacing: -0.03em; line-height: 0.98;",
-    "buttonStyle": "padding: 14px 28px; border-radius: 14px; font-weight: 700; font-size: 15px;",
-    "borderRadius": "18px",
-    "sectionPadding": "96px 24px",
-    "artDirection": "Dark tech precision with cinematic contrast and premium negative space",
-    "compositionStyle": "Split hero, alternating dense bento grids and quiet editorial sections",
-    "surfaceStyle": "Soft glass cards with restrained gradients and crisp borders",
-    "visualMotif": "Thin glowing separators, rounded data chips, layered cards",
-    "shadowStyle": "Soft, local depth on inner surfaces only",
-    "seoStrategy": "Entity-rich copy, intent-aligned headings, answer-first paragraphs, FAQ support, semantic structure",
-    "answerEngineStyle": "Direct quotable explanations with clear definitions, specific claims, and summary passages",
-    "entityFocus": "Exact product category, audience, problems solved, use cases, and differentiators",
-    "trustSignals": "Specific numbers, process clarity, proof points, testimonials, implementation details"
+    "fontFamily": "[Base Font Family]",
+    "headingFontFamily": "[Heading Font Family]",
+    "bodyFontFamily": "[Body Font Family]",
+    "typographyPairName": "[Typography Pair Name]",
+    "headingStyle": "[Heading CSS rules]",
+    "buttonStyle": "[Button CSS rules]",
+    "borderRadius": "[e.g. 18px]",
+    "sectionPadding": "[e.g. 96px 24px]",
+    "artDirection": "[Describe art direction]",
+    "compositionStyle": "[Describe composition style]",
+    "surfaceStyle": "[Describe surface style]",
+    "visualMotif": "[Describe visual motif]",
+    "shadowStyle": "[Describe shadow style]",
+    "seoStrategy": "[Describe SEO strategy]",
+    "answerEngineStyle": "[Describe answer engine style]",
+    "entityFocus": "[Describe entity focus]",
+    "trustSignals": "[Describe trust signals]"
   },
   "blocks": [
-    { "type": "hero", "description": "[REAL copy + explicit composition and hierarchy]" },
-    { "type": "features", "description": "[REAL copy + explicit composition and hierarchy]" },
-    { "type": "benefits", "description": "[REAL copy + explicit composition and hierarchy]" },
-    { "type": "testimonials", "description": "[REAL copy + explicit composition and hierarchy]" },
-    { "type": "cta", "description": "[REAL copy + explicit composition and hierarchy]" },
-    { "type": "footer", "description": "[REAL copy + explicit composition and hierarchy]" }
+    { "type": "[block_type e.g. hero]", "description": "[REAL copy + explicit composition and hierarchy]" },
+    { "type": "[block_type e.g. features]", "description": "[REAL copy + explicit composition and hierarchy]" }
   ]
 }
 
@@ -171,17 +156,19 @@ The user provided HTML of a reference page below. You MUST:
 export const AGENT_ANIM_PLAN_ADDON = `
 
 ANIMATIONS ENABLED:
-- Prefer clear headings, layered cards, CTA buttons, focal media zones, and deliberate reveal targets.
-- Keep the layout stable and production-friendly.
-- Do not invent effects that require JavaScript inside the generated HTML.
-- Plan sections so motion enhances hierarchy, not as decoration for decoration's sake.`;
+- We have access to jQuery on the page (Tilda includes it).
+- You MAY plan complex interactive effects that require custom JavaScript/jQuery (e.g. mouse move parallax, scroll-trigger class toggles, custom interactive sliders, complex accordion logic).
+- Make sure to keep the layout stable and production-friendly.
+- Plan sections so motion enhances hierarchy and adds premium interactivity.`;
 
 export function makeAgentBlockPrompt(
   ds: DesignSystem,
   block: BlockPlan,
   blockIndex: number,
   totalBlocks: number,
-  animOpts?: AnimationOptions
+  animOpts?: AnimationOptions,
+  allBlocks?: BlockPlan[],
+  refinementInstruction?: string
 ): string {
   const hasAnim = !!(
     animOpts &&
@@ -211,7 +198,11 @@ export function makeAgentBlockPrompt(
     ? `\n\nANIMATION HINTS: ${parts.join(' | ')}`
     : '';
 
-  return `You are a professional HTML/CSS developer building a Tilda landing page block.
+  const refinementSection = refinementInstruction
+    ? `\n\n=== ✏ УКАЗАНИЯ ДЛЯ ДОРАБОТКИ БЛОКА ===\nПОЛЬЗОВАТЕЛЬ ПОПРОСИЛ КОНКРЕТНО ИЗМЕНИТЬ ИМЕННО ЭТОТ БЛОК:\n"${refinementInstruction}"\nУбедись, что это требование выполнено в первую очередь!\n=============================================\n`
+    : '';
+
+  return `You are a professional HTML/CSS developer building a Tilda landing page block.${refinementSection}
 
 DESIGN SYSTEM (you MUST follow this exactly):
 - Primary: ${ds.primaryColor}
@@ -243,18 +234,29 @@ BLOCK TO GENERATE:
 Type: ${block.type} (section ${blockIndex + 1} of ${totalBlocks})
 Content to use EXACTLY on the page:
 ${block.description}
+
+BLOCK CONTEXT (adjacent blocks for awareness — do NOT duplicate their content, ONLY care about visual flow):
+${blockIndex > 0 && allBlocks ? `- PREVIOUS block (${blockIndex}/${totalBlocks}): "${allBlocks[blockIndex - 1].type}" — ${allBlocks[blockIndex - 1].description.slice(0, 150)}...` : '- This is the FIRST block on the page.'}
+${blockIndex < totalBlocks - 1 && allBlocks ? `- NEXT block (${blockIndex + 2}/${totalBlocks}): "${allBlocks[blockIndex + 1].type}" — ${allBlocks[blockIndex + 1].description.slice(0, 150)}...` : '- This is the LAST block on the page.'}
+IMPORTANT: Alternate background colors with adjacent blocks. If the previous block likely uses a dark bg, use a light bg, and vice versa. Avoid two dark or two light sections in a row.
 ${animSection}
 
 HARD RULES:
 1. Return ONLY one html code block or raw HTML. No explanations.
-2. All HTML tags MUST be properly closed.
-3. Use ONLY inline CSS or a single <style> block at the top.
-4. The section MUST contain the text from the content above. Do not replace it with generic filler.
-5. Make text readable with strong contrast.
-6. Wrap everything in a single <section> or <div> root for this block.
-7. Use max-width: 1200px; margin: 0 auto; padding: 0 20px; for the inner container.
-8. Make it responsive with flexbox or CSS grid. Never use fixed widths above 1200px.
-9. NEVER put big box-shadow, outer glow, filter, or neon halo on the ROOT block wrapper itself.
+2. DO NOT include <!DOCTYPE>, <html>, <head>, <body>, <meta>, or <title> tags. Output ONLY the wrapper <section> or <div> and its contents.
+3. DO NOT use Base64 encoded images in CSS or HTML. They cause token truncation and will break the output.
+4. For images, MUST use the pseudo-protocol: \`src="GEMINI_IMAGEN: {detailed english prompt describing the image}"\`.
+   - Example 1: \`<img src="GEMINI_IMAGEN: realistic luxury coffee cup sitting on a dark wooden table cinematic lighting" alt="..." />\`
+   - Example 2: \`url("GEMINI_IMAGEN: elegant abstract 3d shapes floating over dark background")\`
+   - NEVER use picsum.photos or pollinations.ai. MAKE the prompt highly detailed and relevant to the block content.
+5. All HTML tags MUST be properly closed.
+5. Use ONLY inline CSS or a single <style> block at the top. You MAY include a single <script> block at the bottom using jQuery for interactive effects.
+6. The section MUST contain the text from the content above. Do not replace it with generic filler.
+7. Make text readable with strong contrast.
+8. Wrap everything in a single <section> or <div> root for this block.
+9. Use max-width: 1200px; margin: 0 auto; padding: 0 20px; for the inner container.
+10. Make it responsive with flexbox or CSS grid AND generic CSS @media queries (e.g. @media (max-width: 768px)) to adjust padding, font-sizes, and flex-directions (e.g. flex-direction: column) for mobile devices. A block is NOT valid without mobile responsiveness.
+11. NEVER put big box-shadow, outer glow, filter, or neon halo on the ROOT block wrapper itself.
 10. Visual depth must happen INSIDE the block: cards, CTA buttons, media panels, badges, or inner surfaces.
 11. The root section background can have color or gradient, but it must sit cleanly on the page without looking like one huge glowing card dropped under the section.
 12. Use the typography pair intentionally: headings must feel distinct from body text.
@@ -279,14 +281,14 @@ QUALITY:
 - Use specific claims, explainers, process details, and trust cues instead of empty superlatives.
 - Avoid giant glowing frames around the whole section.
 - The block must feel cohesive with the design system.
-- Prefer stable, production-friendly markup over risky visual tricks.`;
+- If animations are complex, write a concise <script> block at the end using $(document).ready() to add scroll-listeners, mouse-move parallax, or hover logic. Prefix your script classes/ids carefully so they do not conflict.`;
 }
 
 export function stripModelNoise(text: string): string {
   return text
     .replace(/<think>[\s\S]*?<\/think>/gi, '')
-    .replace(/^```[a-z]*\s*/i, '')
-    .replace(/```\s*$/i, '')
+    .replace(/^\s*```[a-z]*\s*/i, '')
+    .replace(/\s*```\s*$/i, '')
     .trim();
 }
 
@@ -327,20 +329,80 @@ export function extractJsonText(raw: string): string {
   return trimmed;
 }
 
-export function extractHtmlText(raw: string): string {
-  const trimmed = stripModelNoise(raw);
-  const matches = [...trimmed.matchAll(/```[a-z]*\s*([\s\S]*?)\s*```/gi)];
-  if (matches.length > 0) {
-    return matches.map((m) => m[1].trim()).join('\n\n');
+/**
+ * Strip full-document wrappers that AI sometimes generates despite instructions.
+ * Extracts only the content inside <body>...</body>, removing <!DOCTYPE>, <html>,
+ * <head>, <meta>, <title>, and <body> wrapper tags.
+ */
+function stripDocumentWrapper(html: string): string {
+  let result = html;
+
+  // Remove <!DOCTYPE ...>
+  result = result.replace(/<!DOCTYPE[^>]*>/gi, '');
+
+  // If there's a <body>...</body>, extract only its contents
+  const bodyMatch = result.match(/<body[^>]*>([\s\S]*?)<\/body>/i);
+  if (bodyMatch) {
+    result = bodyMatch[1];
+  } else {
+    // No <body> tag, but still remove <html>, <head>...</head>, standalone <meta>, <title>
+    result = result.replace(/<html[^>]*>/gi, '');
+    result = result.replace(/<\/html>/gi, '');
+    result = result.replace(/<head[\s\S]*?<\/head>/gi, '');
+    result = result.replace(/<meta[^>]*\/?>/gi, '');
+    result = result.replace(/<title[^>]*>[\s\S]*?<\/title>/gi, '');
   }
 
-  const firstAngle = trimmed.indexOf('<');
-  const lastAngle = trimmed.lastIndexOf('>');
-  if (firstAngle !== -1 && lastAngle !== -1 && lastAngle > firstAngle) {
-    return trimmed.slice(firstAngle, lastAngle + 1).trim();
+  // Remove any remaining <body> or </body> tags (in case of malformed HTML)
+  result = result.replace(/<\/?body[^>]*>/gi, '');
+
+  return result.trim();
+}
+
+/**
+ * Validate that an HTML block is valid and not empty/garbage.
+ * Returns the HTML if valid, or throws an error with details.
+ */
+export function validateBlockHtml(html: string, minLength = 200): string {
+  const trimmed = html.trim();
+
+  if (!trimmed) {
+    throw new Error('AI вернул пустой HTML-блок');
+  }
+
+  if (trimmed.length < minLength) {
+    throw new Error(`AI вернул слишком короткий блок (${trimmed.length} символов, минимум ${minLength}). Содержимое: ${trimmed.slice(0, 100)}...`);
+  }
+
+  // Check for empty <style></style> only blocks
+  const withoutStyleTags = trimmed.replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '').trim();
+  const withoutScriptTags = withoutStyleTags.replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '').trim();
+  if (withoutScriptTags.length < 50) {
+    throw new Error('AI вернул блок, содержащий только <style>/<script> без реального контента');
   }
 
   return trimmed;
+}
+
+export function extractHtmlText(raw: string): string {
+  const trimmed = stripModelNoise(raw);
+  let html: string;
+
+  const matches = [...trimmed.matchAll(/```[a-z]*\s*([\s\S]*?)\s*```/gi)];
+  if (matches.length > 0) {
+    html = matches.map((m) => m[1].trim()).join('\n\n');
+  } else {
+    const firstAngle = trimmed.indexOf('<');
+    const lastAngle = trimmed.lastIndexOf('>');
+    if (firstAngle !== -1 && lastAngle !== -1 && lastAngle > firstAngle) {
+      html = trimmed.slice(firstAngle, lastAngle + 1).trim();
+    } else {
+      html = trimmed;
+    }
+  }
+
+  // Always strip document wrappers in case AI generated a full HTML document
+  return stripDocumentWrapper(html);
 }
 
 function stripVisualEffectsFromStyle(styleValue: string): string {
@@ -383,7 +445,7 @@ export async function callGemini(
         contents: [{ parts: [{ text: prompt }] }],
         generationConfig: {
           temperature: options.temperature ?? 0.5,
-          maxOutputTokens: options.maxOutputTokens ?? 8192,
+          maxOutputTokens: options.maxOutputTokens ?? 60000,
         },
       }),
     }
@@ -395,13 +457,159 @@ export async function callGemini(
   }
 
   const data = await response.json();
-  const modelParts = data?.candidates?.[0]?.content?.parts;
+  const candidate = data?.candidates?.[0];
+  const finishReason = candidate?.finishReason;
+
+  // Detect blocked/filtered responses
+  if (finishReason === 'SAFETY') {
+    throw new Error('Gemini заблокировал ответ из-за фильтра безопасности. Попробуйте переформулировать промпт.');
+  }
+  if (finishReason === 'RECITATION') {
+    throw new Error('Gemini отклонил ответ из-за совпадения с защищённым контентом.');
+  }
+
+  const modelParts = candidate?.content?.parts;
   if (!Array.isArray(modelParts) || modelParts.length === 0) {
     throw new Error('Пустой ответ от Gemini');
   }
 
-  return modelParts
+  const text = modelParts
     .filter((part: { text?: string }) => typeof part.text === 'string' && part.text.length > 0)
     .map((part: { text: string }) => part.text)
     .join('');
+
+  // Detect truncated output
+  if (finishReason === 'MAX_TOKENS') {
+    console.warn('[Tilda Space AI] ⚠ Ответ обрезан (MAX_TOKENS). Длина:', text.length);
+    // Still return the text — validateBlockHtml will catch if it's too short
+    // But mark it so callers can detect truncation
+    (globalThis as Record<string, unknown>).__lastGeminiTruncated = true;
+  } else {
+    (globalThis as Record<string, unknown>).__lastGeminiTruncated = false;
+  }
+
+  return text;
+}
+
+/**
+ * Generates an image using Gemini's native API.
+ * Uses `gemini-3.1-flash-image-preview` for generating a 1024x1024 jpeg image.
+ * Returns the data URI representation.
+ */
+export async function generateImagenImage(apiKey: string, prompt: string): Promise<string> {
+  const url = `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-flash-image-preview:predict?key=${apiKey}`;
+
+  const payload = {
+    instances: [
+      { prompt }
+    ],
+    parameters: {
+      sampleCount: 1,
+      aspectRatio: "1:1",
+      outputOptions: {
+        mimeType: "image/jpeg"
+      }
+    }
+  };
+
+  const response = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload),
+  });
+
+  if (!response.ok) {
+    const text = await response.text();
+    console.error(`Imagen generation error:`, text);
+    throw new Error(`Imagen generation failed: ${response.status}`);
+  }
+
+  const data = await response.json();
+  const predictions = data.predictions;
+
+  if (!predictions || predictions.length === 0 || !predictions[0].bytesBase64Encoded) {
+    throw new Error('No image data returned from Imagen API.');
+  }
+
+  return `data:image/jpeg;base64,${predictions[0].bytesBase64Encoded}`;
+}
+
+export async function callGeminiStream(
+  apiKey: string,
+  prompt: string,
+  onChunk: (text: string) => void,
+  options: GeminiCallOptions = {}
+): Promise<string> {
+  const model = options.model || 'gemini-2.5-pro';
+
+  const response = await fetch(
+    `https://generativelanguage.googleapis.com/v1beta/models/${model}:streamGenerateContent?alt=sse&key=${apiKey}`,
+    {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        systemInstruction: options.systemPrompt ? { parts: [{ text: options.systemPrompt }] } : undefined,
+        contents: [{ parts: [{ text: prompt }] }],
+        generationConfig: {
+          temperature: options.temperature ?? 0.5,
+          maxOutputTokens: options.maxOutputTokens ?? 60000,
+        },
+      }),
+    }
+  );
+
+  if (!response.ok) {
+    const err = await response.text();
+    throw new Error(`Gemini API Stream (${response.status}): ${err}`);
+  }
+
+  if (!response.body) {
+    throw new Error('No response body from Gemini API Stream');
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder('utf-8');
+  let fullText = '';
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+
+    // Process SSE lines
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || ''; // Keep the last incomplete line in the buffer
+
+    for (const line of lines) {
+      if (line.startsWith('data: ')) {
+        const dataStr = line.slice(6).trim();
+        if (!dataStr) continue;
+
+        try {
+          const data = JSON.parse(dataStr);
+          const candidate = data?.candidates?.[0];
+
+          if (candidate?.finishReason === 'SAFETY') {
+            throw new Error('Gemini заблокировал ответ из-за фильтра безопасности.');
+          }
+          if (candidate?.finishReason === 'RECITATION') {
+            throw new Error('Gemini отклонил ответ из-за совпадения с защищённым контентом.');
+          }
+
+          const parts = candidate?.content?.parts;
+          if (Array.isArray(parts) && parts.length > 0 && typeof parts[0].text === 'string') {
+            const chunkText = parts[0].text;
+            fullText += chunkText;
+            onChunk(chunkText);
+          }
+        } catch (e) {
+          // Ignore parse errors for incomplete JSON or unknown structures
+        }
+      }
+    }
+  }
+
+  return fullText;
 }
