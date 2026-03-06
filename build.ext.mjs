@@ -31,7 +31,19 @@ async function build() {
     format: 'iife',
   });
 
-  copyFileSync('src/extension/popup/popup.js', `${outdir}/popup.js`);
+  await esbuild.build({
+    ...common,
+    entryPoints: ['src/extension/popup/popup.ts'],
+    outfile: `${outdir}/popup.js`,
+    format: 'iife',
+  });
+
+  await esbuild.build({
+    ...common,
+    entryPoints: ['src/extension/content/ace-main.ts'],
+    outfile: `${outdir}/ace-main.js`,
+    format: 'iife',
+  });
 
   copyFileSync('manifest.json', `${outdir}/manifest.json`);
   copyFileSync('src/extension/popup/popup.html', `${outdir}/popup.html`);

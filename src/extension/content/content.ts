@@ -1,66 +1,9 @@
 import { PANEL_CSS } from './styles';
+import type { DesignSystem, BlockPlan, AgentPlan, AnimationOptions } from '../shared/aiRuntime';
+import { createLargeTestBlocks, type TestBlock } from '../shared/testBlocks';
+import type { RecordedAction, BlockAgentJobSnapshot, BlockAgentJobResult, TildaUploadParams, TildaUploadResponse } from './types';
+import { applyAnimations, fixHtmlForTilda, exportAsHtmlFile, clipboardWrite } from './htmlUtils';
 
-interface DesignSystem {
-  primaryColor: string;
-  secondaryColor: string;
-  accentColor: string;
-  bgLight: string;
-  bgDark: string;
-  textColor: string;
-  textMuted: string;
-  fontFamily: string;
-  headingStyle: string;
-  buttonStyle: string;
-  borderRadius: string;
-  sectionPadding: string;
-}
-
-interface BlockPlan {
-  type: string;
-  description: string;
-}
-
-interface AgentPlan {
-  designSystem: DesignSystem;
-  blocks: BlockPlan[];
-}
-
-interface AnimationOptions {
-  staggerReveal: boolean;
-  fadeInUp: boolean;
-  zoomIn: boolean;
-  cardLift: boolean;
-  glowHover: boolean;
-  tiltHover: boolean;
-  textClip: boolean;
-  parallax: boolean;
-  floatSubtle: boolean;
-}
-
-interface RecordedAction {
-  n: number;
-  step: string;
-  ts: string;
-  delayMs: number;
-  action: 'click' | 'dblclick' | 'key';
-  key?: string;
-  docUrl: string;
-  tag: string;
-  id: string;
-  classes: string;
-  text: string;
-  ariaLabel: string;
-  role: string;
-  rect: { w: number; h: number };
-  path: string;
-  selector: string;
-  selectors: string[];
-  inIframe: boolean;
-  parentFormbox: string;
-  parentRecord: string;
-  parentRecordUi: string;
-  tpRecordUiHovered: boolean;
-}
 
 class TildaSpaceAI {
   private shadow: ShadowRoot;
@@ -72,15 +15,29 @@ class TildaSpaceAI {
   private recordedActions: RecordedAction[] = [];
   private recordingCounter = 0;
   private lastRecordTs = 0;
+  private readonly testBlockMinLength = 2500;
+  private lastPlan: { designSystem: DesignSystem; blocks: BlockPlan[]; animOptions: AnimationOptions } | null = null;
+  private generationHistory: { timestamp: number; prompt: string; blocksCount: number }[] = [];
+  private generationAborted = false;
 
   constructor() {
     const host = document.createElement('div');
     host.id = 'tilda-space-ai-root';
+    host.style.position = 'fixed';
+    host.style.zIndex = '2147483647';
+    host.style.top = '0';
+    host.style.right = '0';
+    host.style.width = '0';
+    host.style.height = '0';
+    host.style.pointerEvents = 'none';
     document.body.appendChild(host);
     this.shadow = host.attachShadow({ mode: 'closed' });
 
     const style = document.createElement('style');
-    style.textContent = PANEL_CSS;
+    style.textContent = PANEL_CSS + `
+      :host { pointer-events: none; }
+      .ts-fab, .ts-panel { pointer-events: auto; }
+    `;
     this.shadow.appendChild(style);
 
     this.fab = this.createFAB();
@@ -89,6 +46,8 @@ class TildaSpaceAI {
     this.shadow.appendChild(this.fab);
 
     this.setupClickRecorder();
+    this.setupRuntimeHandlers();
+    this.setupHotkeys();
     this.checkApiKey();
 
     chrome.storage.onChanged.addListener((changes, namespace) => {
@@ -96,6 +55,60 @@ class TildaSpaceAI {
         this.checkApiKey();
       }
     });
+  }
+
+  private setupRuntimeHandlers() {
+    chrome.runtime.onMessage.addListener((message: { type?: string; html?: string }, _sender, sendResponse) => {
+      if (message.type === 'GET_PAGE_HTML') {
+        sendResponse({ html: this.getCurrentPageHtml() });
+        return false;
+      }
+
+      if (message.type === 'INSERT_BLOCK') {
+        const html = typeof message.html === 'string' ? message.html : '';
+        if (!html.trim()) {
+          sendResponse({ success: false, error: 'Пустой HTML блок' });
+          return false;
+        }
+
+        this.insertBlockIntoTilda(html)
+          .then((success) => sendResponse(success
+            ? { success: true }
+            : { success: false, error: 'Не удалось вставить HTML в Tilda' }))
+          .catch((err: Error) => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      return false;
+    });
+  }
+
+  private setupHotkeys() {
+    document.addEventListener('keydown', (e: KeyboardEvent) => {
+      // Ctrl+Enter or Cmd+Enter → trigger generate
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && this.isOpen) {
+        e.preventDefault();
+        const genBtn = this.shadow.querySelector('#tsa-generate-btn') as HTMLButtonElement | null;
+        if (genBtn && !genBtn.disabled) genBtn.click();
+      }
+      // Escape → close panel
+      if (e.key === 'Escape' && this.isOpen) {
+        e.preventDefault();
+        this.toggle();
+      }
+    });
+  }
+
+  private getCurrentPageHtml(): string {
+    const mainContent = document.querySelector('#allrecords')
+      || document.querySelector('.t-container')
+      || document.querySelector('main')
+      || document.body;
+
+    return mainContent === document.body
+      ? document.documentElement.outerHTML
+      : (mainContent as HTMLElement).innerHTML;
   }
 
   private setupClickRecorder() {
@@ -254,17 +267,32 @@ class TildaSpaceAI {
   private createFAB(): HTMLElement {
     const btn = document.createElement('button');
     btn.className = 'ts-fab';
-    btn.textContent = '✨';
+    this.updateFabIcon(btn, false);
     btn.title = 'Tilda Space AI';
     btn.addEventListener('click', () => this.toggle());
     return btn;
   }
 
+  private updateFabIcon(btn: HTMLElement, isOpen: boolean) {
+    btn.innerHTML = isOpen
+      ? '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
+      : `
+      <svg class="tfe-cloud-icon" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+        <path class="tfe-cloud-base" fill="#ffffff" d="M9 22C5.686 22 3 19.314 3 16C3 12.686 5.686 10 9 10C9.663 10 10.298 10.113 10.887 10.316C12.15 7.24 15.228 5 18.8 5C23.329 5 27 8.582 27 13C27 13.111 26.998 13.221 26.993 13.332C28.749 14.194 30 16.035 30 18.2C30 21.403 27.403 24 24.2 24L9 22Z"/>
+        <path class="tfe-cloud-top" fill="rgba(255,255,255,0.8)" d="M14 19C11.791 19 10 17.209 10 15C10 12.791 11.791 11 14 11C14.442 11 14.865 11.075 15.258 11.21C16.1 9.16 18.152 7.667 20.533 7.667C23.553 7.667 26 10.055 26 13C26 13.074 25.999 13.147 25.995 13.221C27.166 13.796 28 15.023 28 16.467C28 18.602 26.269 20.333 24.133 20.333L14 19Z"/>
+        <circle class="tfe-particle p1" cx="8" cy="8" r="1.5" fill="#fff" />
+        <circle class="tfe-particle p2" cx="24" cy="6" r="2" fill="#fff" />
+        <circle class="tfe-particle p3" cx="28" cy="22" r="1" fill="#fff" />
+        <circle class="tfe-particle p4" cx="6" cy="24" r="1.5" fill="#fff" />
+      </svg>
+    `;
+  }
+
   private toggle() {
     this.isOpen = !this.isOpen;
-    this.panel.classList.toggle('open', this.isOpen);
+    this.panel.classList.toggle('active', this.isOpen);
     this.fab.classList.toggle('active', this.isOpen);
-    this.fab.textContent = this.isOpen ? '✕' : '✨';
+    this.updateFabIcon(this.fab, this.isOpen);
   }
 
   private createPanel(): HTMLElement {
@@ -272,12 +300,19 @@ class TildaSpaceAI {
     panel.className = 'ts-panel';
     panel.innerHTML = `
       <div class="ts-header">
-        <h2>✨ Tilda Space AI</h2>
-        <button class="ts-close">✕</button>
+        <div class="ts-title">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/></svg>
+          Tilda Space AI
+        </div>
+        <button class="ts-settings-icon" id="ts-settings-header" aria-label="Settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+        <button class="ts-close" id="ts-close-header" aria-label="Close">✕</button>
       </div>
       <div class="ts-body" id="ts-body"></div>
     `;
-    panel.querySelector('.ts-close')!.addEventListener('click', () => this.toggle());
+    panel.querySelector('#ts-close-header')!.addEventListener('click', () => this.toggle());
+    panel.querySelector('#ts-settings-header')!.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }));
     return panel;
   }
 
@@ -296,114 +331,199 @@ class TildaSpaceAI {
 
   private renderNoKeyUI() {
     const body = this.getBody();
-    body.innerHTML = `<div class="ts-no-key"><p>🔑 Задайте API ключ Gemini в настройках расширения</p><button class="ts-btn-open">Открыть настройки</button></div>`;
-    body.querySelector('.ts-btn-open')!.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }));
+    body.innerHTML = `
+      <div style="text-align:center; padding: 40px 20px;">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="1.5" style="margin-bottom: 16px;">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        <h3 style="margin-bottom: 8px; font-weight: 700; color: #0f172a;">Требуется ключ API</h3>
+        <p style="color: #64748b; font-size: 13px; margin-bottom: 24px; line-height: 1.5;">Для генерации контента подключите ваш Gemini API ключ в настройках расширения.</p>
+        <button class="ts-btn-primary" id="ts-open-settings-nokey">Открыть настройки</button>
+      </div>
+    `;
+    body.querySelector('#ts-open-settings-nokey')!.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }));
   }
 
   private renderPromptUI() {
     const body = this.getBody();
     body.innerHTML = `
-      <div class="ts-prompt-area">
-        <textarea id="ts-prompt" placeholder="Опишите сайт, который нужно создать...&#10;&#10;Система агентов создаст каждый блок в едином дизайне и вставит в Tilda"></textarea>
-      </div>
-      <div class="ts-template-row" style="display: none;">
-        <button class="ts-template-btn" id="ts-use-as-template" type="button">📄 Использовать эту страницу как шаблон</button>
-        <div class="ts-template-status" id="ts-template-status"></div>
-      </div>
-      <div class="ts-mode-row">
-        <label class="ts-mode-label">
-          <input type="checkbox" id="ts-single-block" />
-          <span>Только 1 блок (для теста)</span>
-        </label>
-      </div>
-      <div class="ts-anim-row">
-        <div class="ts-anim-header">
-          <span class="ts-anim-title">✨ Дизайнерские анимации</span>
-          <div class="ts-anim-presets">
-            <button type="button" class="ts-anim-preset" data-preset="none">Выкл</button>
-            <button type="button" class="ts-anim-preset" data-preset="light">Лёгкие</button>
-            <button type="button" class="ts-anim-preset" data-preset="premium">Премиум</button>
+      <!-- Generator Accordion -->
+      <div class="ts-accordion-wrap open">
+        <button class="ts-accordion-header" type="button">
+          🎨 Генерация блока
+          <svg class="ts-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="ts-accordion-body">
+          <label class="ts-label" style="margin-top:0">Промпт дизайна</label>
+          <textarea id="ts-prompt" class="ts-input" placeholder="Опишите структуру и стиль блока... (напр. 'Темный hero-блок с 3D анимацией')"></textarea>
+          
+          <div class="ts-template-row" style="display: none; margin-top: 8px;">
+            <button class="ts-btn-secondary" id="ts-use-as-template" type="button">📄 Использовать как шаблон</button>
+            <div class="ts-template-status" id="ts-template-status" style="font-size: 12px; color: #64748b; margin-top: 4px;"></div>
           </div>
-        </div>
-        <div class="ts-anim-group">
-          <span class="ts-anim-group-title">Появление при скролле</span>
-          <div class="ts-anim-checks">
-            <label class="ts-anim-label" title="Элементы появляются каскадом с задержкой"><input type="checkbox" id="ts-anim-stagger-reveal" /><span>Каскад (stagger)</span></label>
-            <label class="ts-anim-label" title="Появление снизу вверх"><input type="checkbox" id="ts-anim-fade-in-up" /><span>Fade In Up</span></label>
-            <label class="ts-anim-label" title="Увеличение при появлении на экране"><input type="checkbox" id="ts-anim-zoom-in" /><span>Zoom In</span></label>
-            <label class="ts-anim-label" title="Заголовки раскрываются слева направо"><input type="checkbox" id="ts-anim-text-clip" /><span>Text clip reveal</span></label>
-          </div>
-        </div>
-        <div class="ts-anim-group">
-          <span class="ts-anim-group-title">Hover-эффекты</span>
-          <div class="ts-anim-checks">
-            <label class="ts-anim-label" title="Карточки приподнимаются с тенью"><input type="checkbox" id="ts-anim-card-lift" /><span>Card lift</span></label>
-            <label class="ts-anim-label" title="Свечение акцентного цвета"><input type="checkbox" id="ts-anim-glow-hover" /><span>Glow</span></label>
-            <label class="ts-anim-label" title="Лёгкий 3D наклон при наведении"><input type="checkbox" id="ts-anim-tilt-hover" /><span>Tilt 3D</span></label>
-          </div>
-        </div>
-        <div class="ts-anim-group">
-          <span class="ts-anim-group-title">Фоновые эффекты</span>
-          <div class="ts-anim-checks">
-            <label class="ts-anim-label" title="Смещение слоёв при прокрутке"><input type="checkbox" id="ts-anim-parallax" /><span>Параллакс</span></label>
-            <label class="ts-anim-label" title="Лёгкое покачивание элементов"><input type="checkbox" id="ts-anim-float-subtle" /><span>Float</span></label>
+          
+          <div style="margin-top: 12px;">
+            <label class="ts-pill-checkbox">
+              <input type="checkbox" id="ts-single-block" class="ts-visually-hidden ts-pill-checkbox-input" />
+              <span class="ts-pill-label">Включить локальный 1 блок</span>
+            </label>
           </div>
         </div>
       </div>
-      <div class="ts-recorder-row">
-        <span class="ts-recorder-title">📹 Запись действий</span>
-        <div class="ts-recorder-btns">
-          <button class="ts-recorder-start" id="ts-recorder-start" type="button">Запустить</button>
-          <button class="ts-recorder-stop" id="ts-recorder-stop" type="button" disabled>Стоп</button>
-          <button class="ts-recorder-copy" id="ts-recorder-copy" type="button" disabled title="JSON для скрипта">Скопировать JSON</button>
-          <button class="ts-recorder-copy-steps" id="ts-recorder-copy-steps" type="button" disabled title="Пошаговый лог">Скопировать пошагово</button>
+
+      <!-- Scenarios Accordion -->
+      <div class="ts-accordion-wrap">
+        <button class="ts-accordion-header" type="button">
+          📚 Готовые сценарии
+          <svg class="ts-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="ts-accordion-body">
+          <div class="ts-suggestions-scroll">
+            <button class="ts-suggestion ts-suggestion-kvai" data-prompt="Создай визуально ошеломляющий, ультрапремиальный лендинг из 7 блоков для авангардного web-бутика &quot;NeuroSync&quot;, который делает сайты с фокусом на 3D, motion-дизайн и нестандартный UX.
+
+Стиль и арт-дирекшн: &quot;Cyber-Elegance&quot;. Кинематографичный, темный интерфейс с максимальной глубиной. Основной цвет — абсолютный черный (#000000). Акценты: неоновый пурпурный (Magenta, #FF00FF) или жидкое золото. Вместо стандартных карточек — слоистые &quot;стеклянные&quot; панели с эффектом зернистости (noise/grain). Очень крупная, нестандартная, выразительная типографика.
+
+Тон и копирайт: Высокомерный, но чертовски привлекательный. Мало слов, больше визуального веса у каждой фразы. Мы не агентство, мы — лаборатория цифрового искусства. Мы создаем web-проекты, которые выигрывают награды и сводят с ума конкурентов.
+
+СТРУКТУРА СТРАНИЦЫ И JQUERY-ИНТЕРАКТИВЫ (Ровно 7 блоков):
+
+1. Hero Intro: Гигантский H1-заголовок, занимающий 80% экрана (&quot;РАЗРУШАЕМ ПРЕДЕЛЫ WEB-ДИЗАЙНА&quot;). На фоне нужен jQuery-скрипт: при движении мышки (mousemove) элементы заголовка и фоновые абстрактные шейпы должны двигаться с эффектом крутого параллакса с разной скоростью.
+2. Манифест (Scroll Reveal): Текстовый блок с огромной дерзкой цитатой. Через jQuery реализуй появление текста побуквенно или по словам по мере скролла до этого элемента.
+3. Архитектура превосходства (Услуги): Креативная асимметричная сетка (Bento Grid). Напиши jQuery-скрипт: при наведении (hover) на карточку, заголовок должен на долю секунды получать эффект цифрового глитча.
+4. Showcase (Интерактивная галерея проектов): Сделай горизонтальный аккордеон на jQuery. При наведении (hover) на узкую полоску с названием проекта, его карточка плавно &quot;раскрывается&quot; на всю ширину, показывая детали и фоновые изображения, а остальные сжимаются.
+5. Алгоритм синтеза (Процесс): Вертикальный timeline. Через jQuery сделай так, чтобы шаги плавно загорались неоновым свечением строго в тот момент, когда пользователь доскролливает ровно до них.
+6. Hall of Fame (Награды): Огромная, бесконечная текстовая бегущая строка (Marquee). С помощью jQuery привяжи анимацию к скроллу: строка должна ускоряться, когда пользователь крутит колесико мыши.
+7. Ультимативный CTA: Кнопка &quot;Начать проект&quot; слегка &quot;убегает&quot; от курсора на пару пикселей при приближении мыши, а при наведении выдает мощное свечение.
+
+ВАЖНЫЕ ТЕХНИЧЕСКИЕ ПРАВИЛА:
+Напиши реалистичные и сложные jQuery скрипты в тегах &lt;script&gt; в конце HTML каждого блока, чтобы вся интерактивность реально и плавно работала. Не используй стандартные Bootstrap/Tailwind классы, пиши свой собственный уникальный премиальный CSS с использованием CSS-переменных.">🔮 Premium 3D</button>
+            <button class="ts-suggestion" data-prompt="Создай премиальный SaaS лендинг для AI-платформы. Дизайн: Vercel/Linear style. Глубокий темный фон (#09090b), стеклянные карточки (rgba(255,255,255,0.03)), акценты (#22c55e или #3b82f6), тонкие бордеры, светящиеся тени. 
+
+СТРУКТУРА И JQUERY (7 блоков):
+1. Hero: Крупный заголовок, jQuery-скрипт для плавного появления элементов с задержкой (staggered fade-in) при загрузке.
+2. Bento Grid Features: 6 ячеек разного размера. jQuery скрипт: при наведении мыши карточка следует за курсором легким 3D tilt-эффектом и подсвечивает бордеры (glow effect).
+3. Интерактивная схема работы: jQuery табы, переключающиеся без перезагрузки с крутыми CSS-транзишенами содержимого.
+4. Отзывы: Горизонтальный плавный скролл-карусель на jQuery, который можно драгать мышью.
+5. Stats/Numbers: 4 крупных числа. Напиши jQuery-скрипт счетчика (count up) от 0 до числа при попадании блока в зону видимости.
+6. Тарифы: 3 карточки. При выборе toggle &quot;Месяц/Год&quot; через jQuery красиво пересчитываются цены с эффектом slot-machine.
+7. CTA Footer: Эффект параллакса на фоне при скролле. Обязательны крутые hover-стейты кнопок. Напиши все jQuery-скрипты встроено в HTML.">🚀 SaaS Linear</button>
+            <button class="ts-suggestion" data-prompt="Создай брутальный промо-сайт для андеграундного бренда одежды (Neo-Brutalism). Стиль: сырой, дерзкий, громкая асимметрия. Цвета: агрессивный желтый (#ffd93d) фон, толстые черные контуры (4px solid #000), жесткие тени (6px 6px 0 #000). Шрифт: мега-жирный, гротеск. Никаких скруглений.
+
+СТРУКТУРА И JQUERY АНИМАЦИИ (7 блоков):
+1. Hero Title: Заголовок огромными буквами, который при движении мыши (mousemove) через jQuery «разваливается» на слои с эффектом хроматической аберрации.
+2. Бегущая строка: Огромный Marquee, направление и скорость которого через jQuery жестко привязаны к скорости скролла (scroll velocity).
+3. Карточки коллекции: 4 массивные карточки. jQuery скрипт: при клике на карточку она с резким звуком захлопывается как папка или откидывается в сторону.
+4. Манифест (Текст): Огромный абзац текста. jQuery Intersection Observer переключает цвет текста с черного на инвертированный, пока пользователь скроллит по параграфу.
+5. Draggable-элементы: Разбросанные стикеры по экрану. Реализуй на jQuery UI (или чистом jQuery+events) возможность юзеру перетаскивать их мышкой.
+6. Галерея: Masonry-сетка. При наведении на картинку (hover) jQuery включает glitch-анимацию через canvas или CSS-фильтры на долю секунды.
+7. Footer/Subscribe: Форма подписки. Кнопка отправки при наведении дрожит (shake) через jQuery до тех пор, пока юзер не нажмет. Опиши все jQuery скрипты детально в коде.">⚡ Neo Brutalism</button>
+            <button class="ts-suggestion ts-suggestion-svg" data-prompt="Создай элитный Corporate Web-портал (Yandex/Apple style). Чистый белый фон (#ffffff), премиальный светло-серый surface (#f5f5f6), строгий черный текст. Акцент: фирменный синий (#2D7FF9). Дизайн должен дышать: огромные паддинги, выверенная типографика (system-ui), скругления 12px, мягкие глубокие тени.
+
+СТРУКТУРА И JQUERY АНИМАЦИИ (7 блоков):
+1. Hero Statement: Элегантный текст. jQuery скрипт плавно меняет ключевое слово в заголовке каждые 2 секунды (fade in/out text rotator).
+2. Фичи (Sticky Scroll): Сделай секцию, где левая колонка залипает (position: sticky), а правая контентная скроллится. Через jQuery подсвечивай активный пункт меню слева в зависимости от того, какой блок справа сейчас в поле зрения.
+3. Interactive Map/Stats: jQuery hover-эффекты на статистику — рисуй плавные линии соединений или увеличивай графики при наведении.
+4. Экспертиза (Accordion): Профессиональный корпоративный аккордеон на jQuery. Плавное открытие/закрытие (slideUp, slideDown) деталей услуг.
+5. Отзывы-карточки: 3D стеклянные карточки на белом. Через jQuery добавь легкий параллакс карточек относительно друг друга при движении курсора по секции.
+6. News Feed: Горизонтальный скролл с новостями. Кнопки &quot;влево/вправо&quot; для плавной прокрутки контейнера, реализованной на jQuery (&quot;scrollLeft&quot;).
+7. CTA &amp; Complex Footer: Многоуровневый футер. Напиши красивый скрипт валидации email в форме прямо на jQuery (highlight красным при ошибке, зеленая галочка при успехе).">📊 Corp Premium</button>
+          </div>
         </div>
       </div>
-      <div class="ts-svg-row">
-        <span class="ts-svg-title">🎨 SVG генератор</span>
-        <div class="ts-svg-section">
-          <label class="ts-svg-label">Иконка (24–48px)</label>
-          <input type="text" id="ts-svg-icon-prompt" placeholder="Опишите иконку" class="ts-svg-input" />
-          <button type="button" id="ts-svg-icon-btn" class="ts-svg-btn">Генерировать иконку</button>
-        </div>
-        <div class="ts-svg-section">
-          <label class="ts-svg-label">Большая анимация</label>
-          <input type="text" id="ts-svg-anim-prompt" placeholder="Опишите анимацию" class="ts-svg-input" />
-          <button type="button" id="ts-svg-anim-btn" class="ts-svg-btn">Генерировать анимацию</button>
-        </div>
-        <div class="ts-svg-result" id="ts-svg-result" style="display:none">
-          <div class="ts-svg-preview" id="ts-svg-preview"></div>
-          <button type="button" id="ts-svg-copy" class="ts-svg-copy">📋 Копировать SVG</button>
+
+      <!-- Settings / Animations Accordion -->
+      <div class="ts-accordion-wrap">
+        <button class="ts-accordion-header" type="button">
+          ⚙️ Пресеты анимации
+          <svg class="ts-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="ts-accordion-body">
+          <div class="ts-anim-header" style="margin-bottom: 12px;">
+            <div class="ts-anim-presets" style="display: flex; gap: 8px;">
+              <button type="button" class="ts-btn-secondary ts-anim-preset" data-preset="none" style="flex:1">Выкл</button>
+              <button type="button" class="ts-btn-secondary ts-anim-preset" data-preset="light" style="flex:1">Light</button>
+              <button type="button" class="ts-btn-secondary ts-anim-preset" data-preset="premium" style="flex:1">Premium</button>
+            </div>
+          </div>
+          
+          <div class="ts-anim-groups">
+            <div class="ts-anim-group">
+              <span class="ts-anim-group-title">Reveal</span>
+              <div class="ts-checkbox-row">
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-stagger-reveal" /><span class="ts-pill-label">Cascade</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-fade-in-up" /><span class="ts-pill-label">Fade Up</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-zoom-in" /><span class="ts-pill-label">Zoom</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-text-clip" /><span class="ts-pill-label">Text Clip</span></label>
+              </div>
+            </div>
+            <div class="ts-anim-group" style="margin-top: 12px">
+              <span class="ts-anim-group-title">Hover</span>
+              <div class="ts-checkbox-row">
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-card-lift" /><span class="ts-pill-label">Lift</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-glow-hover" /><span class="ts-pill-label">Glow</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-tilt-hover" /><span class="ts-pill-label">3D Tilt</span></label>
+              </div>
+            </div>
+            <div class="ts-anim-group" style="margin-top: 12px">
+              <span class="ts-anim-group-title">Background</span>
+              <div class="ts-checkbox-row">
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-parallax" /><span class="ts-pill-label">Parallax</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-float-subtle" /><span class="ts-pill-label">Float</span></label>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-      <button class="ts-generate-btn" id="ts-generate">🤖 Запустить агентов</button>
-      <div class="ts-suggestions">
-        <p>ГОТОВЫЕ СЦЕНАРИИ · 2026</p>
-        <button class="ts-suggestion ts-suggestion-kvai" data-prompt="Лендинг AI-сервиса. Блоки: hero (градиент #694be8→#8167f0, заголовок + CTA), 3–4 карточки преимуществ, тарифы с иконками и ценами, FAQ аккордеон, отзывы 3 шт, CTA, footer. Design system: primary #694be8, accent #e9cc57, bg #0f0f14, text #fff. Border-radius 12px, padding 24px. Premium, конверсионный.">🔮 KV-AI Premium</button>
-        <button class="ts-suggestion" data-prompt="Bento Grid SaaS. Блоки: hero (заголовок + subline), bento-сетка 6–8 модулей разного размера (крупный 2x2, средние 1x2, мелкие 1x1) — каждый модуль: иконка + заголовок + 1 строка текста. Feature showcase, CTA, footer. Цвета: bg #0a0a0a, card #18181b, accent #3b82f6, text #fafafa. Gap 16px, border-radius 16px. Минимум текста, визуальная иерархия через размер ячеек.">📦 Bento Grid SaaS</button>
-        <button class="ts-suggestion" data-prompt="Neo-Brutalism лендинг. Блоки: hero, 3 features в карточках, отзывы, CTA, footer. Ключевое: каждая карточка и кнопка — border: 4px solid #000, box-shadow: 6px 6px 0 #000. Цвета: жёлтый #ffd93d фон карточек, чёрный #000 текст и рамки, белый #fff фон секций. Типография: жирная 700+, без скруглений (border-radius: 0). Асимметрия в layout. Raw, bold, Gen Z aesthetic.">⚡ Neo-Brutalism</button>
-        <button class="ts-suggestion" data-prompt="Glassmorphism лендинг. Блоки: hero (фон тёмный градиент, контент поверх), features в полупрозрачных карточках (background: rgba(255,255,255,0.1), border: 1px solid rgba(255,255,255,0.2)), тарифы, CTA, footer. Цвета: bg #1e293b, accent #818cf8, text #f1f5f9. Карточки с лёгкой тенью. Утончённый, слоёный.">🪟 Glassmorphism</button>
-        <button class="ts-suggestion" data-prompt="Earth Tones лендинг. Блоки: hero, преимущества 3–4, о компании, отзывы, CTA, footer. Цвета: primary #8B7355, secondary #D4A574, bg #faf8f5, text #2d2a26. Тёплые оттенки, много padding 40–60px, line-height 1.6. Шрифты читаемые, воздух между секциями. Человечность, доверие, grounding.">🌿 Earth Tones</button>
-        <button class="ts-suggestion" data-prompt="Dark Tech лендинг (Linear/Vercel style). Блоки: hero с крупной типографикой (48px+), features минималистично 3 колонки, тарифы компактно, CTA, footer. Цвета: bg #09090b, surface #18181b, accent #22c55e или #a855f7, text #a1a1aa. Border-radius 8px. Никакого декора, только контент. Скорость, чистота, premium.">🚀 Dark Tech</button>
-        <button class="ts-suggestion" data-prompt="Креативное агентство. Блоки: hero крупный заголовок + субтитр, галерея работ 6 карточек (2x3) с hover-эффектом, услуги 4 с иконками, о команде 2–3 человека, контакты + CTA, footer. Цвета: bg #fff, accent #f97316, text #0f0f0f. Типография: заголовки 700–800, размер 36–48px. Смелый, креативный.">🎨 Креатив-агентство</button>
-        <button class="ts-suggestion" data-prompt="Лендинг кофейни. Блоки: hero с крупным фото (800px height), меню 3 категории (напитки, десерты, завтраки), о нас, галерея 4 фото, отзывы, контакты + карта, footer. Цвета: primary #6F4E37, bg #FFF8F0, accent #8B4513. Шрифты: основной читаемый, заголовки можно cursive для атмосферы. Уют, тепло.">☕ Кофейня</button>
-        <button class="ts-suggestion" data-prompt="Лендинг фитнес-клуба. Блоки: hero с мотивационным заголовком, направления 4–6 карточек (тренажёрка, йога, групповые и т.д.), тренеры 3 с фото и именем, тарифы 3 плана, отзывы, CTA, footer. Цвета: bg #f8fafc, accent #f97316 или #ef4444, text #1e293b. Динамика, контраст, энергия.">💪 Фитнес</button>
-        <button class="ts-suggestion ts-suggestion-yandex" data-prompt="Yandex Metrika Style (по образцу yandex.ru/adv/metrika). Design system: bg #ffffff, bgAlt #f5f5f6, primary #2D7FF9 (Yandex blue), text #000000, textMuted #666666, font Yandex Sans / -apple-system / system-ui. Hero: H1 крупный 40–48px + subline + CTA-кнопка «Создать»/«Начать» + stat-badge (например «95% используют»). Feature-duo: 2 большие карточки 50/50 — иконка 32px + заголовок H3 + 2–3 строки текста. Grid «Возможности»: 5–6 карточек-ссылок в сетке — иконка + заголовок + 1 строка. Stats: 3 крупных числа (9 млн, 1.6 млн, 120) + подписи в ряд. News: 3 карточки — дата + заголовок + excerpt + «Подробнее». Promo-block: тёмный контрастный блок (bg #1a1a1a), title + описание + CTA «Подробнее». «Читайте также»: 6–8 карточек статей — thumbnail, заголовок, дата, excerpt, тег. FAQ «С чего начать»: accordion 4–5 вопросов. CTA: 2 кнопки рядом. Footer: 3 быстрые ссылки (иконка+текст) + колонки. Карточки: border-radius 12px, box-shadow: 0 2px 8px rgba(0,0,0,0.08), padding 24px. Кнопки: primary filled #2D7FF9, secondary outline. Никаких тяжёлых градиентов — чистый корпоративный стиль.">📊 Yandex Metrika Style</button>
-        <button class="ts-suggestion ts-suggestion-svg" data-prompt="Лендинг с настоящими SVG-анимациями. ВСЕ иконки — inline SVG с <animate>, <animateTransform> (движение, морфинг, пульсация). Hero: крупный анимированный SVG — движущиеся формы, градиенты. Карточки: у каждой анимированная SVG-иконка. Фоновые декорации: анимированные волны, круги. Цвета подбирай сам под единый стиль. Минимум 5–6 уникальных SVG-анимаций.">🎨 SVG Animated</button>
+
+      <!-- Recorder Accordion -->
+      <div class="ts-accordion-wrap">
+        <button class="ts-accordion-header" type="button">
+          📹 Запись действий
+          <svg class="ts-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="ts-accordion-body">
+          <div class="ts-recorder-wrap">
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <button class="ts-recorder-btn ts-recorder-start" id="ts-recorder-start" type="button">Start</button>
+              <button class="ts-btn-secondary ts-recorder-stop" id="ts-recorder-stop" type="button" disabled style="flex:1">Stop</button>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="ts-btn-secondary" id="ts-recorder-copy" type="button" disabled style="flex:1">📋 JSON</button>
+              <button class="ts-btn-secondary" id="ts-recorder-copy-steps" type="button" disabled style="flex:1">📋 Шаги</button>
+            </div>
+          </div>
+        </div>
       </div>
-      
+
+      <div class="ts-actions-grid">
+        <button class="ts-btn-primary" id="ts-generate">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          Создать нейро-блок
+        </button>
+        <button class="ts-test-btn" id="ts-test-large-blocks" type="button" style="width: auto;">🧪 7 blocks</button>
+      </div>
+
       <!-- Секция основного лога генерации -->
       <div id="ts-agent-log"></div>
 
       <!-- Секция ДЛЯ ОТЛАДКИ -->
       <div class="ts-debug-section">
-        <button class="ts-debug-toggle" id="ts-debug-toggle">🐛 Показать лог отладки (вставка в Tilda)</button>
-        <div class="ts-debug-log" id="ts-debug-log" style="display: none;"></div>
+        <button class="ts-btn-secondary" id="ts-debug-toggle" style="width:100%">🐛 Показать лог отладки</button>
+        <div class="ts-debug-log" style="display: none;" id="ts-debug-log"></div>
       </div>
     `;
 
+    // Initialize accordions
+    body.querySelectorAll('.ts-accordion-header').forEach(header => {
+      header.addEventListener('click', () => {
+        header.parentElement?.classList.toggle('open');
+      });
+    });
+
     const promptEl = body.querySelector('#ts-prompt') as HTMLTextAreaElement;
     const generateBtn = body.querySelector('#ts-generate') as HTMLButtonElement;
+    const testLargeBlocksBtn = body.querySelector('#ts-test-large-blocks') as HTMLButtonElement;
 
     // Предотвращаем перехват Tilda: буквы П (P) и С (C) и вставка ссылок.
     // stopPropagation в фазе bubble — символ успевает напечататься, событие не доходит до Tilda.
@@ -421,13 +541,19 @@ class TildaSpaceAI {
     const useTemplateBtn = body.querySelector('#ts-use-as-template') as HTMLButtonElement;
     const templateStatus = body.querySelector('#ts-template-status') as HTMLDivElement;
 
-    this.updateTemplateStatus(templateStatus);
+    if (templateStatus) {
+      this.updateTemplateStatus(templateStatus);
+    }
 
-    useTemplateBtn.addEventListener('click', () => {
-      const mainContent = document.querySelector('#allrecords') || document.querySelector('.t-container') || document.querySelector('main') || document.body;
-      const html = mainContent === document.body ? document.documentElement.outerHTML : mainContent.innerHTML;
-      chrome.storage.local.set({ templateHtml: html }, () => this.updateTemplateStatus(templateStatus));
-    });
+    if (useTemplateBtn) {
+      useTemplateBtn.addEventListener('click', () => {
+        const mainContent = document.querySelector('#allrecords') || document.querySelector('.t-container') || document.querySelector('main') || document.body;
+        const html = mainContent === document.body ? document.documentElement.outerHTML : mainContent.innerHTML;
+        chrome.storage.local.set({ templateHtml: html }, () => {
+          if (templateStatus) this.updateTemplateStatus(templateStatus);
+        });
+      });
+    }
 
     const getAnimationOptions = (): AnimationOptions => ({
       staggerReveal: (body.querySelector('#ts-anim-stagger-reveal') as HTMLInputElement)?.checked ?? false,
@@ -461,6 +587,12 @@ class TildaSpaceAI {
       }
     });
 
+    if (testLargeBlocksBtn) {
+      testLargeBlocksBtn.addEventListener('click', () => {
+        this.runLargeBlockTest(getAnimationOptions());
+      });
+    }
+
     promptEl.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         const p = promptEl.value.trim();
@@ -476,7 +608,6 @@ class TildaSpaceAI {
         const p = (btn as HTMLElement).dataset.prompt || '';
         promptEl.value = p;
         promptEl.focus();
-        // Ставим курсор в самое начало, чтобы пользователю было удобно дописать тему
         promptEl.selectionStart = 0;
         promptEl.selectionEnd = 0;
       });
@@ -556,52 +687,6 @@ class TildaSpaceAI {
         });
       });
     }
-
-    // SVG генератор
-    let lastSvg = '';
-    const svgIconPrompt = body.querySelector('#ts-svg-icon-prompt') as HTMLInputElement;
-    const svgAnimPrompt = body.querySelector('#ts-svg-anim-prompt') as HTMLInputElement;
-    const svgIconBtn = body.querySelector('#ts-svg-icon-btn');
-    const svgAnimBtn = body.querySelector('#ts-svg-anim-btn');
-    const svgResult = body.querySelector('#ts-svg-result') as HTMLElement;
-    const svgPreview = body.querySelector('#ts-svg-preview') as HTMLElement;
-    const svgCopyBtn = body.querySelector('#ts-svg-copy');
-    const runSvgGen = async (type: 'icon' | 'anim') => {
-      const prompt = type === 'icon' ? svgIconPrompt?.value?.trim() : svgAnimPrompt?.value?.trim();
-      if (!prompt) return;
-      const btn = type === 'icon' ? svgIconBtn : svgAnimBtn;
-      if (btn) { (btn as HTMLButtonElement).disabled = true; (btn as HTMLButtonElement).textContent = '…'; }
-      try {
-        const resp = await this.sendMessage({
-          type: type === 'icon' ? 'GENERATE_SVG_ICON' : 'GENERATE_SVG_ANIMATION',
-          prompt,
-          size: type === 'icon' ? 48 : undefined,
-        }) as { success: boolean; svg?: string; error?: string };
-        if (resp.success && resp.svg) {
-          lastSvg = resp.svg;
-          if (svgResult) svgResult.style.display = 'block';
-          if (svgPreview) {
-            svgPreview.innerHTML = '';
-            const wrap = document.createElement('div');
-            wrap.style.cssText = 'padding:16px;background:#f8fafc;border-radius:8px;display:flex;align-items:center;justify-content:center;min-height:80px;';
-            wrap.innerHTML = resp.svg;
-            const svgEl = wrap.querySelector('svg');
-            if (svgEl && type === 'anim') { svgEl.setAttribute('width', '200'); svgEl.setAttribute('height', '150'); }
-            else if (svgEl && type === 'icon') { svgEl.setAttribute('width', '48'); svgEl.setAttribute('height', '48'); }
-            svgPreview.appendChild(wrap);
-          }
-        } else {
-          this.debugLog(`SVG ошибка: ${resp.error || 'unknown'}`);
-        }
-      } finally {
-        if (btn) { (btn as HTMLButtonElement).disabled = false; (btn as HTMLButtonElement).textContent = type === 'icon' ? 'Генерировать иконку' : 'Генерировать анимацию'; }
-      }
-    };
-    if (svgIconBtn) svgIconBtn.addEventListener('click', () => runSvgGen('icon'));
-    if (svgAnimBtn) svgAnimBtn.addEventListener('click', () => runSvgGen('anim'));
-    if (svgCopyBtn) svgCopyBtn.addEventListener('click', () => {
-      if (lastSvg) navigator.clipboard.writeText(lastSvg).then(() => { (svgCopyBtn as HTMLButtonElement).textContent = '✓ Скопировано'; setTimeout(() => { (svgCopyBtn as HTMLButtonElement).textContent = '📋 Копировать SVG'; }, 1500); });
-    });
   }
 
   private updateTemplateStatus(el: HTMLDivElement | null) {
@@ -663,10 +748,96 @@ class TildaSpaceAI {
     }
   }
 
+  private async startBlockAgentJobs(
+    planId: string,
+    designSystem: DesignSystem,
+    blocks: BlockPlan[],
+    animOptions: AnimationOptions
+  ): Promise<Map<number, string>> {
+    const jobEntries = await Promise.all(blocks.map(async (block, index) => {
+      const resp = await this.sendMessage({
+        type: 'START_BLOCK_AGENT',
+        planId,
+        designSystem,
+        block,
+        blockIndex: index,
+        totalBlocks: blocks.length,
+        animOptions,
+        allBlocks: blocks,
+      }) as { success: boolean; job?: BlockAgentJobSnapshot; error?: string };
+
+      if (!resp.success || !resp.job) {
+        throw new Error(resp.error || `Не удалось запустить агент блока ${index + 1}`);
+      }
+
+      return [index, resp.job.jobId] as const;
+    }));
+
+    return new Map(jobEntries);
+  }
+
+  private async getBlockAgentStatus(jobId: string): Promise<BlockAgentJobSnapshot> {
+    const resp = await this.sendMessage({
+      type: 'GET_BLOCK_AGENT_STATUS',
+      jobId,
+    }) as { success: boolean; job?: BlockAgentJobSnapshot; error?: string };
+
+    if (!resp.success || !resp.job) {
+      throw new Error(resp.error || `Не удалось получить статус job ${jobId}`);
+    }
+
+    return resp.job;
+  }
+
+  private async getBlockAgentResult(jobId: string): Promise<BlockAgentJobResult> {
+    const resp = await this.sendMessage({
+      type: 'GET_BLOCK_AGENT_RESULT',
+      jobId,
+    }) as { success: boolean; job?: BlockAgentJobResult; error?: string };
+
+    if (!resp.success || !resp.job) {
+      throw new Error(resp.error || `Не удалось получить результат job ${jobId}`);
+    }
+
+    return resp.job;
+  }
+
+  private describeBlockAgentStatus(snapshot: BlockAgentJobSnapshot): { icon: string; text: string } {
+    if (snapshot.status === 'queued') {
+      return { icon: '⏳', text: 'В очереди...' };
+    }
+    if (snapshot.status === 'streaming') {
+      return { icon: '🌊', text: 'Пишу код...' };
+    }
+    if (snapshot.status === 'running') {
+      return { icon: '🤖', text: `Агент работает (${snapshot.attempts}/${snapshot.maxRetries})...` };
+    }
+    if (snapshot.status === 'retrying') {
+      return { icon: '🔄', text: `Повтор (${snapshot.attempts}/${snapshot.maxRetries})...` };
+    }
+    if (snapshot.status === 'success') {
+      return { icon: '✅', text: 'Готов к вставке' };
+    }
+    return { icon: '❌', text: snapshot.error ? `Ошибка: ${snapshot.error}` : 'Ошибка генерации' };
+  }
+
+  private collectGeneratedHtml(): string {
+    return this.generatedBlocks.filter(Boolean).join('\n\n');
+  }
+
   private async runAgents(prompt: string, singleBlockMode = false, animOptions: AnimationOptions = { staggerReveal: false, fadeInUp: false, zoomIn: false, cardLift: false, glowHover: false, tiltHover: false, textClip: false, parallax: false, floatSubtle: false }) {
     const generateBtn = this.shadow.querySelector('#ts-generate') as HTMLButtonElement;
+    const testBtn = this.shadow.querySelector('#ts-test-large-blocks') as HTMLButtonElement | null;
     generateBtn.disabled = true;
-    generateBtn.textContent = '🤖 Агенты работают...';
+    if (testBtn) testBtn.disabled = true;
+    generateBtn.textContent = '⏹ Остановить';
+    generateBtn.disabled = false; // re-enable as stop button
+    this.generationAborted = false;
+
+    // Wire the button as a stop trigger
+    const stopHandler = () => { this.generationAborted = true; generateBtn.textContent = '⏳ Останавливаем...'; generateBtn.disabled = true; };
+    generateBtn.addEventListener('click', stopHandler, { once: true });
+
     this.generatedBlocks = [];
     this.clearDebugLog();
     this.debugLog('▶ Запуск генерации...');
@@ -699,6 +870,7 @@ class TildaSpaceAI {
       }) as { success: boolean; plan?: AgentPlan; error?: string };
       if (!planResp.success || !planResp.plan) throw new Error(planResp.error || 'Ошибка планирования');
       const plan = planResp.plan;
+      this.lastPlan = { designSystem: plan.designSystem, blocks: plan.blocks, animOptions: animOptions };
       this.debugLog(`Оркестратор ✓ План: ${plan.blocks.length} блоков (${plan.blocks.map(b => b.type).join(', ')})`);
 
       this.log(`
@@ -722,7 +894,7 @@ class TildaSpaceAI {
       if (singleBlockMode) {
         this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#eab308"><div class="ts-agent-title">⚠️ Режим теста: генерирую только 1 блок</div></div>`);
       }
-      this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#3b82f6"><div class="ts-agent-title">⚡ Генерация блоков (параллельно)</div><div class="ts-agent-status" style="font-size:11px;color:#64748b">Ожидайте завершения всех блоков...</div></div>`);
+      this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#3b82f6"><div class="ts-agent-title">⚡ Генерация блоков (отдельный агент на блок)</div><div class="ts-agent-status" style="font-size:11px;color:#64748b">Запускаю изолированные block-agent job для всех блоков...</div></div>`);
       for (let i = 0; i < blocksToGenerate.length; i++) {
         const block = blocksToGenerate[i];
         this.appendLog(`
@@ -735,63 +907,102 @@ class TildaSpaceAI {
           </div>
         `);
       }
-      const MAX_RETRIES = 3;
-      const RETRY_DELAY_MS = 5000;
-      const isRetryableError = (err: string) =>
-        /503|429|500|504|UNAVAILABLE|high demand|Resource exhausted|overloaded/i.test(err || '');
 
-      const generateBlockWithRetry = async (block: { type: string; description: string }, i: number) => {
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-          const resp = await this.sendMessage({
-            type: 'AGENT_BLOCK',
-            designSystem: plan.designSystem,
-            block,
-            blockIndex: i,
-            totalBlocks: blocksToGenerate.length,
-            animOptions,
-          }) as { success: boolean; html?: string; error?: string };
-          if (resp.success && resp.html) {
-            this.updateBlockStatus(i, '✅', 'Готово');
-            this.debugLog(`Блок ${i + 1} готов, длина: ${resp.html.length}`);
-            return { index: i, success: true, html: resp.html };
-          }
-          const errMsg = resp.error || 'unknown';
-          if (attempt < MAX_RETRIES && isRetryableError(errMsg)) {
-            this.updateBlockStatus(i, '🔄', `Повтор (${attempt}/${MAX_RETRIES})...`);
-            this.debugLog(`Блок ${i + 1}: ${errMsg} → повтор через ${RETRY_DELAY_MS / 1000}с`);
-            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
+      // Progress bar
+      this.appendLog(`
+        <div id="ts-progress-wrapper">
+          <div class="ts-progress-text" id="ts-progress-text">0 / ${blocksToGenerate.length} блоков</div>
+          <div class="ts-progress-bar"><div class="ts-progress-fill" id="ts-progress-fill" style="width:0%"></div></div>
+        </div>
+      `);
+
+      const planId = crypto.randomUUID();
+      const blockJobIds = await this.startBlockAgentJobs(planId, plan.designSystem, blocksToGenerate, animOptions);
+      const terminalSnapshots = new Map<number, BlockAgentJobSnapshot>();
+      const fetchedResults = new Set<number>();
+      const completedHtmlByIndex = new Map<number, string>();
+      let nextInsertIndex = 0;
+      let insertQueueAnnounced = false;
+
+      while (terminalSnapshots.size < blocksToGenerate.length) {
+        const pendingIndexes = [...blockJobIds.keys()].filter((index) => !terminalSnapshots.has(index));
+        const pendingSnapshots = await Promise.all(pendingIndexes.map(async (index) => {
+          const snapshot = await this.getBlockAgentStatus(blockJobIds.get(index)!);
+          return { index, snapshot };
+        }));
+
+        for (const { index, snapshot } of pendingSnapshots) {
+          const statusInfo = this.describeBlockAgentStatus(snapshot);
+
+          if (snapshot.status === 'streaming' && snapshot.partialHtml) {
+            const codePreview = snapshot.partialHtml.length > 500
+              ? snapshot.partialHtml.slice(-500)
+              : snapshot.partialHtml;
+            const streamingHtml = `<div class="ts-streaming-preview" style="font-family:monospace;font-size:10px;line-height:1.2;color:#10b981;white-space:pre-wrap;background:#0f172a;padding:8px;border-radius:4px;margin-top:4px;max-height:80px;overflow:hidden">${this.escapeHtml(codePreview)}<span class="ts-cursor">_</span></div>`;
+            this.updateBlockStatus(index, statusInfo.icon, statusInfo.text + streamingHtml);
           } else {
-            this.updateBlockStatus(i, '❌', `Ошибка: ${errMsg}`);
-            this.debugLog(`❌ Блок ${i + 1}: ${errMsg}`);
-            return { index: i, success: false, error: errMsg };
+            this.updateBlockStatus(index, statusInfo.icon, statusInfo.text);
+          }
+
+          if (snapshot.status === 'success' || snapshot.status === 'error') {
+            terminalSnapshots.set(index, snapshot);
+          }
+
+          if (snapshot.status === 'success' && !fetchedResults.has(index)) {
+            const result = await this.getBlockAgentResult(snapshot.jobId);
+            if (!result.html) {
+              terminalSnapshots.set(index, { ...snapshot, status: 'error', error: 'Агент завершился без HTML' });
+              this.updateBlockStatus(index, '❌', 'Ошибка: агент завершился без HTML');
+              continue;
+            }
+            fetchedResults.add(index);
+            completedHtmlByIndex.set(index, result.html);
+            this.generatedBlocks[index] = result.html;
+            this.debugLog(`Блок ${index + 1} готов worker-agent'ом, длина: ${result.html.length}`);
+
+            // Update progress bar
+            const pct = Math.round((fetchedResults.size / blocksToGenerate.length) * 100);
+            const progressFill = this.shadow.querySelector('#ts-progress-fill') as HTMLElement;
+            const progressText = this.shadow.querySelector('#ts-progress-text') as HTMLElement;
+            if (progressFill) progressFill.style.width = `${pct}%`;
+            if (progressText) progressText.textContent = `${fetchedResults.size} / ${blocksToGenerate.length} блоков (${pct}%)`;
           }
         }
-        return { index: i, success: false, error: 'unknown' };
-      };
 
-      const blockPromises = blocksToGenerate.map((block, i) => generateBlockWithRetry(block, i));
-      const blockResults = await Promise.all(blockPromises);
-      const successfulBlocks: { index: number; html: string }[] = blockResults
-        .filter((r): r is { index: number; success: true; html: string } => r.success === true && !!r.html)
-        .map(r => ({ index: r.index, html: r.html }));
-      successfulBlocks.forEach(({ html }) => this.generatedBlocks.push(html));
-      this.debugLog(`Параллельная генерация завершена: ${successfulBlocks.length}/${blocksToGenerate.length} блоков`);
+        if (!insertQueueAnnounced && completedHtmlByIndex.size > 0) {
+          this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#8b5cf6"><div class="ts-agent-title">📥 Ordered insert queue</div><div class="ts-agent-status" style="font-size:11px;color:#64748b">Вставляю только следующий готовый блок по порядку...</div></div>`);
+          insertQueueAnnounced = true;
+        }
 
-      // Phase 2b: Вставляем блоки ПО ОДНОМУ (Tilda не поддерживает параллельную вставку)
-      this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#8b5cf6"><div class="ts-agent-title">📥 Публикация в Tilda (по одному)</div></div>`);
-      for (let j = 0; j < successfulBlocks.length; j++) {
-        const { index: originalIndex, html } = successfulBlocks[j];
-        const htmlPreview = html.length > 1500 ? html.slice(0, 1500) + '...[обрезано]' : html;
-        this.debugLog(`--- КОД БЛОКА ${originalIndex + 1} (начало) ---`);
-        this.debugLog(`<pre style="margin:4px 0;font-size:10px;overflow:auto;max-height:150px">${this.escapeHtml(htmlPreview)}</pre>`);
-        this.debugLog(`--- конец превью ---`);
-        this.updateBlockStatus(originalIndex, '📥', 'Вставляю в Tilda...');
-        const inserted = await this.insertBlockIntoTilda(html, j, animOptions);
-        this.updateBlockStatus(originalIndex, inserted ? '✅' : '📋', inserted ? 'Вставлен' : 'Скопирован');
+        while (completedHtmlByIndex.has(nextInsertIndex)) {
+          const html = completedHtmlByIndex.get(nextInsertIndex)!;
+          const htmlPreview = html.length > 1500 ? html.slice(0, 1500) + '...[обрезано]' : html;
+          this.debugLog(`--- КОД БЛОКА ${nextInsertIndex + 1} (начало) ---`);
+          this.debugLog(`<pre style="margin:4px 0;font-size:10px;overflow:auto;max-height:150px">${this.escapeHtml(htmlPreview)}</pre>`);
+          this.debugLog(`--- конец превью ---`);
+          this.updateBlockStatus(nextInsertIndex, '📥', 'Вставляю в Tilda...');
+          const inserted = await this.insertBlockIntoTilda(html, nextInsertIndex, animOptions);
+          this.updateBlockStatus(nextInsertIndex, inserted ? '✅' : '📋', inserted ? 'Вставлен' : 'Скопирован', true);
+          completedHtmlByIndex.delete(nextInsertIndex);
+          nextInsertIndex += 1;
+        }
+
+        if (pendingIndexes.length > 0) {
+          await this.wait(1200);
+        }
+      }
+
+      const successfulCount = fetchedResults.size;
+      this.debugLog(`Параллельная генерация завершена: ${successfulCount}/${blocksToGenerate.length} блоков`);
+
+      const firstFailedIndex = blocksToGenerate.findIndex((_, index) => terminalSnapshots.get(index)?.status === 'error');
+      if (firstFailedIndex !== -1 && nextInsertIndex <= firstFailedIndex) {
+        this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#ef4444"><div class="ts-agent-title">⛔ Ordered insert queue остановлена</div><div class="ts-agent-status" style="font-size:11px;color:#991b1b">Блок ${firstFailedIndex + 1} завершился ошибкой, поэтому следующие блоки не вставлялись вне очереди.</div></div>`);
       }
 
       // Phase 3: Publish (только если не режим "1 блок")
-      if (!singleBlockMode) {
+      const canPublish = !singleBlockMode && terminalSnapshots.size === blocksToGenerate.length && [...terminalSnapshots.values()].every((snapshot) => snapshot.status === 'success') && nextInsertIndex === blocksToGenerate.length;
+      if (canPublish) {
         this.appendLog(`
         <div class="ts-agent-phase" id="ts-publish">
           <div class="ts-agent-title">🚀 Публикация</div>
@@ -811,14 +1022,137 @@ class TildaSpaceAI {
             ? `<div class="ts-agent-title">🚀 Публикация ✓</div><div class="ts-agent-status" style="color:#166534">Страница опубликована!</div>`
             : `<div class="ts-agent-title">🚀 Публикация</div><div class="ts-agent-status" style="color:#92400e">Нажмите "Опубликовать" вручную</div>`;
         }
+      } else if (!singleBlockMode) {
+        this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#f59e0b"><div class="ts-agent-title">🚀 Публикация пропущена</div><div class="ts-agent-status" style="color:#92400e">Страница не опубликована автоматически: не все block-agent job завершились успешно и по порядку вставились в Tilda.</div></div>`);
       }
 
       // Final summary (всегда показываем)
+      const readyBlocksCount = this.generatedBlocks.filter(Boolean).length;
+      this.generationHistory.push({ timestamp: Date.now(), prompt, blocksCount: readyBlocksCount });
       this.appendLog(`
         <div class="ts-agent-done">
           <div style="font-size:20px;margin-bottom:8px">🎉</div>
-          <div style="font-weight:700;margin-bottom:4px">${this.generatedBlocks.length} блоков создано!</div>
-          <div style="font-size:12px;color:#64748b">Страница собрана в едином дизайне</div>
+          <div style="font-weight:700;margin-bottom:4px">${readyBlocksCount} блоков создано!</div>
+          <div style="font-size:12px;color:#64748b">Генерация выполнена через отдельные block-agent job, вставка шла через ordered queue</div>
+          <button class="ts-action-btn ts-btn-copy" id="ts-copy-all" style="margin-top:12px;width:100%">📋 Копировать весь HTML</button>
+          <div class="ts-export-section">
+            <button class="ts-export-btn" id="ts-export-html">💾 Скачать .html</button>
+            <button class="ts-export-btn" id="ts-export-blocks">📦 Скачать блоки</button>
+          </div>
+        </div>
+      `);
+
+      const copyAllBtn = this.shadow.querySelector('#ts-copy-all');
+      if (copyAllBtn) {
+        copyAllBtn.addEventListener('click', () => {
+          const fullHtml = this.collectGeneratedHtml();
+          this.clipboardWrite(fullHtml);
+          (copyAllBtn as HTMLElement).textContent = '✓ Скопировано!';
+        });
+      }
+
+      // Export as single HTML file
+      const exportHtmlBtn = this.shadow.querySelector('#ts-export-html');
+      if (exportHtmlBtn) {
+        exportHtmlBtn.addEventListener('click', () => {
+          this.exportAsHtmlFile(this.collectGeneratedHtml(), 'tilda-page.html');
+        });
+      }
+
+      // Export blocks as separate sections
+      const exportBlocksBtn = this.shadow.querySelector('#ts-export-blocks');
+      if (exportBlocksBtn) {
+        exportBlocksBtn.addEventListener('click', () => {
+          this.generatedBlocks.filter(Boolean).forEach((html, i) => {
+            this.exportAsHtmlFile(html, `block-${i + 1}.html`);
+          });
+        });
+      }
+
+    } catch (err) {
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (this.generationAborted) {
+        this.debugLog('⏹ Генерация остановлена пользователем');
+        this.appendLog(`<div class="ts-error">⏹ Генерация остановлена</div>`);
+      } else {
+        this.debugLog(`❌ Критическая ошибка: ${errMsg}`);
+        this.appendLog(`<div class="ts-error">❌ ${errMsg}</div>`);
+      }
+    } finally {
+      generateBtn.removeEventListener('click', stopHandler);
+      generateBtn.disabled = false;
+      generateBtn.textContent = '🤖 Запустить агентов';
+      if (testBtn) testBtn.disabled = false;
+      this.generationAborted = false;
+
+      // Chrome notification when generation finishes
+      try {
+        const count = this.generatedBlocks.filter(Boolean).length;
+        if (count > 0) {
+          chrome.runtime.sendMessage({
+            type: 'GENERATION_DONE',
+            blocksCount: count,
+          });
+        }
+      } catch (_) { /* ignore if runtime unavailable */ }
+    }
+  }
+
+  private formatHtmlSize(length: number): string {
+    return `${(length / 1024).toFixed(1)} KB`;
+  }
+
+  private async runLargeBlockTest(animOptions: AnimationOptions) {
+    const generateBtn = this.shadow.querySelector('#ts-generate') as HTMLButtonElement | null;
+    const testBtn = this.shadow.querySelector('#ts-test-large-blocks') as HTMLButtonElement | null;
+    if (!testBtn || testBtn.disabled) return;
+
+    if (generateBtn) generateBtn.disabled = true;
+    testBtn.disabled = true;
+    testBtn.textContent = '🧪 Готовлю большие блоки...';
+    this.generatedBlocks = [];
+    this.clearDebugLog();
+    this.debugLog('▶ Запуск локального теста 7 больших блоков...');
+
+    try {
+      const blocks = this.createLargeTestBlocks();
+      this.log(`
+        <div class="ts-agent-phase done">
+          <div class="ts-agent-title">🧪 Локальная проверка кода</div>
+          <div class="ts-agent-status" style="color:#92400e">
+            7 заранее подготовленных больших HTML-блоков без Gemini
+          </div>
+        </div>
+      `);
+
+      blocks.forEach((block, index) => {
+        this.appendLog(`
+          <div class="ts-agent-phase" id="ts-block-${index}">
+            <div class="ts-agent-title">🧱 Блок ${index + 1}/${blocks.length}: ${block.type}</div>
+            <div class="ts-agent-status">📄 Код подготовлен: ${this.formatHtmlSize(block.html.length)}</div>
+          </div>
+        `);
+      });
+
+      this.generatedBlocks = blocks.map((block) => block.html);
+      this.debugLog(`Подготовлено ${blocks.length} тестовых блоков`);
+
+      this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#8b5cf6"><div class="ts-agent-title">📥 Вставка тестовых блоков в Tilda</div></div>`);
+
+      for (let index = 0; index < blocks.length; index++) {
+        const block = blocks[index];
+        const sizeText = this.formatHtmlSize(block.html.length);
+        this.updateBlockStatus(index, '📥', `Вставляю в Tilda... ${sizeText}`);
+        this.debugLog(`Тестовый блок ${index + 1}: ${block.type}, длина ${block.html.length}`);
+        const inserted = await this.insertBlockIntoTilda(block.html, index, animOptions);
+        this.updateBlockStatus(index, inserted ? '✅' : '📋', inserted ? `Вставлен (${sizeText})` : `Скопирован (${sizeText})`);
+      }
+
+      this.appendLog(`
+        <div class="ts-agent-done">
+          <div style="font-size:20px;margin-bottom:8px">🧪</div>
+          <div style="font-weight:700;margin-bottom:4px">${blocks.length} тестовых блоков готовы</div>
+          <div style="font-size:12px;color:#64748b">Большой заранее подготовленный код проверен без Gemini</div>
           <button class="ts-action-btn ts-btn-copy" id="ts-copy-all" style="margin-top:12px;width:100%">📋 Копировать весь HTML</button>
         </div>
       `);
@@ -831,21 +1165,105 @@ class TildaSpaceAI {
           (copyAllBtn as HTMLElement).textContent = '✓ Скопировано!';
         });
       }
-
     } catch (err) {
-      this.debugLog(`❌ Критическая ошибка: ${err instanceof Error ? err.message : String(err)}`);
-      this.appendLog(`<div class="ts-error">❌ ${err instanceof Error ? err.message : 'Ошибка'}</div>`);
+      this.debugLog(`❌ Локальный тест: ${err instanceof Error ? err.message : String(err)}`);
+      this.appendLog(`<div class="ts-error">❌ ${err instanceof Error ? err.message : 'Ошибка локального теста'}</div>`);
     } finally {
-      generateBtn.disabled = false;
-      generateBtn.textContent = '🤖 Запустить агентов';
+      if (generateBtn) generateBtn.disabled = false;
+      testBtn.disabled = false;
+      testBtn.textContent = '🧪 Проверка 7 больших блоков';
     }
   }
 
-  private updateBlockStatus(index: number, icon: string, text: string) {
+  private createLargeTestBlocks(): TestBlock[] {
+    return createLargeTestBlocks(this.testBlockMinLength);
+  }
+
+  private updateBlockStatus(index: number, icon: string, text: string, showActions = false) {
     const el = this.shadow.querySelector(`#ts-block-${index}`);
     if (!el) return;
     const statusEl = el.querySelector('.ts-agent-status');
-    if (statusEl) statusEl.innerHTML = `${icon} ${text}`;
+    if (!statusEl) return;
+
+    let actionsHtml = '';
+    if (showActions) {
+      actionsHtml = `
+        <div class="ts-block-actions">
+          <button class="ts-block-action-btn" data-action="copy" data-index="${index}">📋 Копировать</button>
+          <button class="ts-block-action-btn" data-action="regen" data-index="${index}">🔄 Перегенерировать</button>
+          <button class="ts-block-action-btn" data-action="preview" data-index="${index}">👁 Превью</button>
+          <button class="ts-block-action-btn" data-action="refine" data-index="${index}">✏ Доработать</button>
+        </div>
+        <div class="ts-refine-panel" id="ts-refine-panel-${index}" style="display:none; margin-top: 8px;">
+          <input type="text" id="ts-refine-input-${index}" placeholder="Что изменить? (напр., 'сделай кнопку красной')" style="width:100%; padding:8px; border-radius:4px; border:1px solid #444; background:#222; color:#fff; font-size:12px; margin-bottom: 8px;" />
+          <button class="ts-block-action-btn" data-action="submit-refine" data-index="${index}" style="width:100%;">Отправить</button>
+        </div>
+        <div class="ts-preview-panel" id="ts-preview-panel-${index}" style="display:none; margin-top: 8px; border: 1px solid #444; border-radius: 4px; overflow: hidden; background: #fff;">
+          <iframe id="ts-preview-iframe-${index}" style="width: 100%; height: 300px; border: none;"></iframe>
+        </div>
+      `;
+    }
+    statusEl.innerHTML = `${icon} ${text}${actionsHtml}`;
+
+    // Bind per-block action buttons
+    if (showActions) {
+      const copyBtn = statusEl.querySelector('[data-action="copy"]');
+      const regenBtn = statusEl.querySelector('[data-action="regen"]');
+      const previewBtn = statusEl.querySelector('[data-action="preview"]');
+      const refineBtn = statusEl.querySelector('[data-action="refine"]');
+      const submitRefineBtn = statusEl.querySelector('[data-action="submit-refine"]');
+
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+          const html = this.generatedBlocks[index];
+          if (html) {
+            this.clipboardWrite(html);
+            (copyBtn as HTMLElement).textContent = '✓ Скопировано';
+            setTimeout(() => { (copyBtn as HTMLElement).textContent = '📋 Копировать'; }, 2000);
+          }
+        });
+      }
+
+      if (regenBtn) {
+        regenBtn.addEventListener('click', () => this.regenerateBlock(index));
+      }
+
+      if (previewBtn) {
+        previewBtn.addEventListener('click', () => {
+          const previewPanel = this.shadow.querySelector(`#ts-preview-panel-${index}`) as HTMLElement;
+          const iframe = this.shadow.querySelector(`#ts-preview-iframe-${index}`) as HTMLIFrameElement;
+          if (previewPanel && iframe) {
+            if (previewPanel.style.display === 'none') {
+              previewPanel.style.display = 'block';
+              iframe.srcdoc = this.generatedBlocks[index] || '';
+            } else {
+              previewPanel.style.display = 'none';
+            }
+          }
+        });
+      }
+
+      if (refineBtn) {
+        refineBtn.addEventListener('click', () => {
+          const refinePanel = this.shadow.querySelector(`#ts-refine-panel-${index}`) as HTMLElement;
+          if (refinePanel) {
+            refinePanel.style.display = refinePanel.style.display === 'none' ? 'block' : 'none';
+          }
+        });
+      }
+
+      if (submitRefineBtn) {
+        submitRefineBtn.addEventListener('click', () => {
+          const input = this.shadow.querySelector(`#ts-refine-input-${index}`) as HTMLInputElement;
+          const instruction = input?.value.trim() || '';
+          if (instruction) {
+            this.regenerateBlock(index, instruction);
+            const refinePanel = this.shadow.querySelector(`#ts-refine-panel-${index}`) as HTMLElement;
+            if (refinePanel) refinePanel.style.display = 'none';
+          }
+        });
+      }
+    }
   }
 
   private sendMessage(msg: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -854,12 +1272,59 @@ class TildaSpaceAI {
     });
   }
 
+  private async regenerateBlock(index: number, refinementInstruction?: string): Promise<void> {
+    if (!this.lastPlan) {
+      this.debugLog('❌ Нет сохранённого плана для перегенерации');
+      return;
+    }
+    const block = this.lastPlan.blocks[index];
+    if (!block) {
+      this.debugLog(`❌ Блок ${index} не найден в плане`);
+      return;
+    }
+
+    this.updateBlockStatus(index, '🔄', 'Перегенерация...');
+    this.debugLog(`🔄 Перегенерация блока ${index + 1}: ${block.type}`);
+
+    try {
+      const resp = await this.sendMessage({
+        type: 'AGENT_BLOCK',
+        designSystem: this.lastPlan.designSystem,
+        block,
+        blockIndex: index,
+        totalBlocks: this.lastPlan.blocks.length,
+        animOptions: this.lastPlan.animOptions,
+        allBlocks: this.lastPlan.blocks,
+        refinementInstruction,
+      }) as { success: boolean; html?: string; error?: string };
+
+      if (!resp.success || !resp.html) {
+        throw new Error(resp.error || 'Ошибка перегенерации');
+      }
+
+      this.generatedBlocks[index] = resp.html;
+      this.debugLog(`✅ Блок ${index + 1} перегенерирован, длина: ${resp.html.length}`);
+
+      const inserted = await this.insertBlockIntoTilda(resp.html, index, this.lastPlan.animOptions);
+      this.updateBlockStatus(index, inserted ? '✅' : '📋', inserted ? 'Перегенерирован и вставлен' : 'Перегенерирован', true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.debugLog(`❌ Ошибка перегенерации: ${msg}`);
+      this.updateBlockStatus(index, '❌', `Ошибка: ${msg}`, true);
+    }
+  }
+
   private getStoredTemplate(): Promise<string | undefined> {
     return new Promise((resolve) => {
       chrome.storage.local.get(['templateHtml'], (result: Record<string, string>) => {
         resolve(result.templateHtml?.trim() || undefined);
       });
     });
+  }
+
+
+  private exportAsHtmlFile(htmlContent: string, filename: string): void {
+    exportAsHtmlFile(htmlContent, filename);
   }
 
   private getSearchableDocuments(): Document[] {
@@ -918,91 +1383,80 @@ class TildaSpaceAI {
   // ─── Дизайнерские анимации (Tilda Zero Block) ───
 
   private applyAnimations(html: string, opts: AnimationOptions): string {
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(`<body>${html}</body>`, 'text/html');
-      const body = doc.body;
-      if (!body?.firstElementChild) return html;
-
-      const root = body.firstElementChild;
-      const css: string[] = [];
-      const eb = 'cubic-bezier(0.22, 1, 0.36, 1)';
-
-      const hasReveal = opts.staggerReveal || opts.fadeInUp || opts.zoomIn;
-      if (opts.staggerReveal) css.push(`.tsa-stagger{opacity:0;transform:translateY(40px);transition:opacity .7s ${eb},transform .7s ${eb}}.tsa-stagger.tsa-revealed{opacity:1;transform:translateY(0)}`);
-      if (opts.fadeInUp) css.push(`.tsa-fade-up{opacity:0;transform:translateY(28px);transition:opacity .6s ${eb},transform .6s ${eb}}.tsa-fade-up.tsa-revealed{opacity:1;transform:translateY(0)}`);
-      if (opts.zoomIn) css.push(`.tsa-zoom{opacity:0;transform:scale(0.92);transition:opacity .55s ${eb},transform .55s ${eb}}.tsa-zoom.tsa-revealed{opacity:1;transform:scale(1)}`);
-      if (opts.cardLift) css.push(`.tsa-card-lift{transition:transform .35s ${eb},box-shadow .35s ${eb}}.tsa-card-lift:hover{transform:translateY(-8px);box-shadow:0 20px 40px rgba(0,0,0,.12),0 8px 16px rgba(0,0,0,.08)}`);
-      if (opts.glowHover) css.push(`.tsa-glow{transition:box-shadow .4s ease}.tsa-glow:hover{box-shadow:0 0 30px rgba(105,75,232,.35),0 0 60px rgba(105,75,232,.15)}`);
-      if (opts.tiltHover) css.push(`.tsa-tilt{transition:transform .3s ${eb};transform-style:preserve-3d}.tsa-tilt:hover{transform:perspective(800px) rotateX(2deg) rotateY(-2deg) scale(1.02)}`);
-      if (opts.textClip) css.push(`.tsa-text-clip{opacity:0;clip-path:inset(0 100% 0 0);transition:clip-path .8s ${eb},opacity .6s ${eb}}.tsa-text-clip.tsa-revealed{opacity:1;clip-path:inset(0 0 0 0)}`);
-      if (opts.parallax) { css.push(`.tsa-parallax{--py:0;transform:translate3d(0,var(--py),0);transition:transform .15s ease-out;will-change:transform}`); if (opts.cardLift) css.push(`.tsa-card-lift.tsa-parallax:hover{transform:translate3d(0,calc(var(--py) - 8px),0)}`); }
-      if (opts.floatSubtle) css.push(`@keyframes tsa-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}.tsa-float{animation:tsa-float 4s ease-in-out infinite}`);
-      if (css.length === 0) return html;
-
-      const sectionLike = Array.from(root.children).filter(
-        ch => ch.tagName !== 'STYLE' && ch.tagName !== 'SCRIPT'
-      ).slice(0, 15);
-
-      sectionLike.forEach((el, i) => {
-        if (hasReveal) {
-          const cls = opts.staggerReveal ? 'tsa-stagger' : opts.fadeInUp ? 'tsa-fade-up' : 'tsa-zoom';
-          el.classList.add(cls, 'tsa-reveal');
-          (el as HTMLElement).style.transitionDelay = `${i * 0.08}s`;
-        }
-        if (opts.cardLift) el.classList.add('tsa-card-lift');
-        if (opts.glowHover) el.classList.add('tsa-glow');
-        if (opts.tiltHover) el.classList.add('tsa-tilt');
-        if (opts.parallax) { el.classList.add('tsa-parallax'); (el as HTMLElement).setAttribute('data-parallax-speed', String(0.2 + (i % 3) * 0.1)); }
-        if (opts.floatSubtle && i % 2 === 0) { el.classList.add('tsa-float'); (el as HTMLElement).style.animationDelay = `${i * 0.2}s`; }
-      });
-
-      if (opts.textClip) {
-        root.querySelectorAll('h1, h2, h3, h4').forEach((h, i) => {
-          if (i > 8) return;
-          h.classList.add('tsa-text-clip', 'tsa-reveal');
-          (h as HTMLElement).style.transitionDelay = `${i * 0.05}s`;
-        });
-      }
-
-      const style = doc.createElement('style');
-      style.textContent = `@media(prefers-reduced-motion:reduce){.tsa-stagger,.tsa-fade-up,.tsa-zoom,.tsa-text-clip,.tsa-float{transition:none;animation:none}}.tsa-reveal{will-change:opacity,transform} ${css.join(' ')}`;
-      body.insertBefore(style, body.firstChild);
-
-      const scripts: string[] = [];
-      if (hasReveal || opts.textClip) {
-        scripts.push(`(function(){var io=typeof IntersectionObserver!=='undefined'?new IntersectionObserver(function(entries){entries.forEach(function(e){if(e.isIntersecting)e.target.classList.add('tsa-revealed');});},{threshold:.06,rootMargin:'0px 0px -50px'}):null;if(io)document.querySelectorAll('.tsa-reveal').forEach(function(el){io.observe(el);});})();`);
-      }
-      if (opts.parallax) {
-        scripts.push(`(function(){var ticking=0;function update(){var sc=window.scrollY||document.documentElement.scrollTop;document.querySelectorAll('.tsa-parallax').forEach(function(el){var s=parseFloat(el.getAttribute('data-parallax-speed'))||0.3;el.style.setProperty('--py',(sc*s*0.1)+'px');});}window.addEventListener('scroll',function(){if(!ticking){requestAnimationFrame(function(){update();ticking=0;});ticking=1;}},{passive:true});update();})();`);
-      }
-      scripts.forEach(s => {
-        const script = doc.createElement('script');
-        script.textContent = s;
-        body.appendChild(script);
-      });
-
-      return body.innerHTML.trim();
-    } catch {
-      return html;
-    }
+    return applyAnimations(html, opts);
   }
 
   // ─── HTML Sanitize (Tilda требует валидный HTML) ───
 
   private fixHtmlForTilda(html: string): string {
-    const trimmed = html.trim();
-    if (!trimmed) return trimmed;
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(`<body>${trimmed}</body>`, 'text/html');
-      const body = doc.body;
-      if (!body) return trimmed;
-      const fixed = body.innerHTML.trim();
-      return fixed || trimmed;
-    } catch {
-      return trimmed;
+    return fixHtmlForTilda(html);
+  }
+
+  private async processImagesInHtml(html: string): Promise<string> {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const imgs = doc.querySelectorAll('img');
+    const elementsWithBg = doc.querySelectorAll('[style*="background-image"]');
+
+    const toUpload: { url: string; element: HTMLElement; attr: string }[] = [];
+
+    imgs.forEach((img) => {
+      const src = img.getAttribute('src');
+      if (src && !src.includes('tildacdn.com')) {
+        toUpload.push({ url: src, element: img, attr: 'src' });
+      }
+    });
+
+    elementsWithBg.forEach((el) => {
+      const style = el.getAttribute('style') || '';
+      const match = style.match(/background-image:\s*url\(['"]?(.*?)['"]?\)/);
+      if (match && match[1] && !match[1].includes('tildacdn.com')) {
+        toUpload.push({ url: match[1], element: el as HTMLElement, attr: 'background-image' });
+      }
+    });
+
+    if (toUpload.length === 0) return html;
+
+    this.debugLog(`Найдено ${toUpload.length} изображений для загрузки в Tilda CDN...`);
+
+    // Get upload params from Tilda page
+    const paramsResp = await this.sendMessage({ type: 'GET_TILDA_UPLOAD_PARAMS' }) as { success: boolean; params?: TildaUploadParams; error?: string };
+    if (!paramsResp.success || !paramsResp.params) {
+      this.debugLog(`⚠️ Не удалось получить ключи загрузки: ${paramsResp.error || 'неизвестная ошибка'}. Использую оригинальные ссылки.`);
+      return html;
     }
+
+    const { params } = paramsResp;
+
+    for (const item of toUpload) {
+      try {
+        this.debugLog(`Загружаю: ${item.url.slice(0, 50)}...`);
+        const filename = item.url.split('/').pop()?.split('?')[0] || 'image.png';
+        const uploadResp = await this.sendMessage({
+          type: 'UPLOAD_IMAGE_TO_TILDA',
+          blobUrl: item.url,
+          filename,
+          params
+        }) as unknown as TildaUploadResponse;
+
+        if (uploadResp.success && uploadResp.url) {
+          if (item.attr === 'src') {
+            item.element.setAttribute('src', uploadResp.url);
+          } else {
+            const oldStyle = item.element.getAttribute('style') || '';
+            const newStyle = oldStyle.replace(/background-image:\s*url\(['"]?(.*?)['"]?\)/, `background-image: url("${uploadResp.url}")`);
+            item.element.setAttribute('style', newStyle);
+          }
+          this.debugLog(`✓ Загружено: ${uploadResp.url}`);
+        } else {
+          this.debugLog(`❌ Ошибка загрузки "${item.url}": ${uploadResp.error}`);
+        }
+      } catch (e) {
+        this.debugLog(`❌ Исключение при загрузке "${item.url}": ${e}`);
+      }
+    }
+
+    return doc.body.innerHTML;
   }
 
   // ─── Tilda Insertion ───
@@ -1011,7 +1465,13 @@ class TildaSpaceAI {
     this.debugLog(`Начинаю вставку блока ${blockIndex + 1}...`);
     try {
       if (blockIndex > 0) await this.wait(600);
-      let processed = this.fixHtmlForTilda(html);
+
+      // --- NEW: Process and upload images before insertion ---
+      this.updateBlockStatus(blockIndex, '🖼️', 'Обработка изображений...');
+      const processedHtml = await this.processImagesInHtml(html);
+      // --------------------------------------------------------
+
+      let processed = this.fixHtmlForTilda(processedHtml);
       const hasAnim = animOptions && (animOptions.staggerReveal || animOptions.fadeInUp || animOptions.zoomIn || animOptions.cardLift || animOptions.glowHover || animOptions.tiltHover || animOptions.textClip || animOptions.parallax || animOptions.floatSubtle);
       if (hasAnim) {
         processed = this.applyAnimations(processed, animOptions);
@@ -1522,17 +1982,7 @@ class TildaSpaceAI {
   }
 
   private async clipboardWrite(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.cssText = 'position:fixed;left:-9999px;opacity:0';
-      document.body.appendChild(ta);
-      ta.focus(); ta.select();
-      try { document.execCommand('copy'); } catch { /* ignore */ }
-      document.body.removeChild(ta);
-    }
+    return clipboardWrite(text);
   }
 }
 
