@@ -1,176 +1,50 @@
-// ─── Design System Types ───
+import {
+  AGENT_ANIM_PLAN_ADDON,
+  AGENT_ORCHESTRATOR_PROMPT,
+  AGENT_ORCHESTRATOR_TEMPLATE_ADDON,
+  callGemini,
+  extractHtmlText,
+  extractJsonText,
+} from '../shared/aiRuntime';
+import type {
+  AnimationOptions,
+  AgentPlan,
+  BlockPlan,
+  DesignSystem,
+} from '../shared/aiRuntime';
+import { runBlockWorker } from './blockWorker';
+import type { BlockWorkerInput } from './blockWorker';
 
-interface DesignSystem {
-  primaryColor: string;
-  secondaryColor: string;
-  accentColor: string;
-  bgLight: string;
-  bgDark: string;
-  textColor: string;
-  textMuted: string;
-  fontFamily: string;
-  headingStyle: string;
-  buttonStyle: string;
-  borderRadius: string;
-  sectionPadding: string;
+type BlockAgentStatus = 'queued' | 'running' | 'retrying' | 'success' | 'error';
+
+interface BlockAgentJob {
+  jobId: string;
+  planId?: string;
+  blockIndex: number;
+  blockType: string;
+  status: BlockAgentStatus;
+  attempts: number;
+  maxRetries: number;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  nextRetryAt?: number;
+  html?: string;
+  error?: string;
+  input: BlockWorkerInput;
 }
 
-interface BlockPlan {
-  type: string;
-  description: string;
-}
-
-interface AnimationOptions {
-  staggerReveal?: boolean;
-  fadeInUp?: boolean;
-  zoomIn?: boolean;
-  cardLift?: boolean;
-  glowHover?: boolean;
-  tiltHover?: boolean;
-  textClip?: boolean;
-  parallax?: boolean;
-  floatSubtle?: boolean;
-}
-
-interface AgentPlan {
-  designSystem: DesignSystem;
-  blocks: BlockPlan[];
-}
-
-// ─── System Prompts ───
-
-const ORCHESTRATOR_PROMPT = `You are a CREATIVE web design orchestrator. A visionary designer who creates pages people WANT to revisit. Your MAIN GOAL: every page must cause a "WOW" effect. You do NOT tolerate generic, bland, or template-like design — boring pages are unacceptable.
-
-Identity: You are an award-level creative director. You think in concepts, not in generic blocks. Each page is an experience: memorable, distinctive, emotionally resonant. You borrow inspiration from the best: Stripe, Linear, Vercel, Awwwards — but never copy. You invent.
-
-Given a user request, you must:
-
-1. Create a BOLD, COHESIVE DESIGN SYSTEM — colors that feel fresh (not default blue/gray), typography with character, spacing that breathes. Surprise the eye.
-2. Plan the page as a JOURNEY — blocks that flow, each with a clear role. No filler. Every section earns its place and delivers impact.
-
-Return a JSON object with this EXACT structure (no markdown, no code fences):
-{
-  "designSystem": {
-    "primaryColor": "#hex",
-    "secondaryColor": "#hex",
-    "accentColor": "#hex",
-    "bgLight": "#hex (light background for alternating sections)",
-    "bgDark": "#hex (dark background for hero/CTA)",
-    "textColor": "#hex (main text)",
-    "textMuted": "#hex (secondary text)",
-    "fontFamily": "'Inter', system-ui, -apple-system, sans-serif",
-    "headingStyle": "font-weight: 800; letter-spacing: -0.02em;",
-    "buttonStyle": "padding: 16px 40px; border-radius: 12px; font-weight: 600; font-size: 16px;",
-    "borderRadius": "16px",
-    "sectionPadding": "100px 20px"
-  },
-  "blocks": [
-    { "type": "hero", "description": "..." },
-    { "type": "features", "description": "..." },
-    { "type": "about", "description": "..." },
-    { "type": "testimonials", "description": "..." },
-    { "type": "cta", "description": "..." },
-    { "type": "footer", "description": "..." }
-  ]
-}
-
-Rules:
-- Color palette: COHESIVE but BOLD. Avoid predictable combos (blue+white, gray gradients). Dare: earthy with electric accent, dark with neon pop, warm minimal with one punch color. Premium ≠ boring.
-- Typography: give it personality. Consider distinctive pairings (display + clean body). Headings must command attention.
-- Plan 4-7 blocks. Each block description: vivid, specific — "hero with asymmetric layout, large typography, subtle gradient mesh" not "hero with title and button".
-- Every block must have a clear visual hook: asymmetry, unexpected layout, micro-interaction opportunity, layered depth.
-- For Russian prompts, write descriptions in Russian.
-- If the request is vague, interpret CREATIVELY. Surprise the user with a direction they didn't explicitly ask for but will love.
-- Return ONLY the JSON. No explanation.`;
-
-function makeBlockPrompt(ds: DesignSystem, block: BlockPlan, blockIndex: number, totalBlocks: number, animOpts?: AnimationOptions): string {
-  const hasAnim = animOpts && (animOpts.staggerReveal || animOpts.fadeInUp || animOpts.zoomIn || animOpts.cardLift || animOpts.glowHover || animOpts.tiltHover || animOpts.textClip || animOpts.parallax || animOpts.floatSubtle);
-  const parts: string[] = [];
-  if (animOpts?.staggerReveal) parts.push('STAGGER REVEAL: Split into 4-8 distinct sections per div. Features, pricing, testimonials.');
-  if (animOpts?.fadeInUp) parts.push('FADE IN UP: Smooth upward reveal on scroll.');
-  if (animOpts?.zoomIn) parts.push('ZOOM IN: Scale-in reveal from 92% to 100% on scroll.');
-  if (animOpts?.cardLift) parts.push('CARD LIFT: Card layout (rounded, padding). Will lift+shadow on hover.');
-  if (animOpts?.glowHover) parts.push('GLOW: Add buttons/cards that glow on hover.');
-  if (animOpts?.tiltHover) parts.push('TILT HOVER: Cards/containers with subtle 3D tilt on hover.');
-  if (animOpts?.textClip) parts.push('TEXT CLIP: Clear h1/h2/h3 headings for left-to-right reveal.');
-  if (animOpts?.parallax) parts.push('PARALLAX: Layered sections, bg+foreground for depth.');
-  if (animOpts?.floatSubtle) parts.push('FLOAT: Subtle vertical bob for accent elements.');
-  const animSection = hasAnim && parts.length > 0
-    ? `\n\nANIMATIONS: ${parts.join(' | ')} — Choose the COOLEST combo for this block. Maximize impact.`
-    : '';
-
-  return `You are a CREATIVE block-level web designer. Your goal: make block ${blockIndex + 1} of ${totalBlocks} MEMORABLE — something that causes a "wow". No generic layouts, no boring centered boxes. You deliver distinctive, premium design that people want to revisit.
-
-DESIGN SYSTEM (you MUST follow this exactly):
-- Primary: ${ds.primaryColor}
-- Secondary: ${ds.secondaryColor}  
-- Accent: ${ds.accentColor}
-- Light bg: ${ds.bgLight}
-- Dark bg: ${ds.bgDark}
-- Text: ${ds.textColor}
-- Muted text: ${ds.textMuted}
-- Font: ${ds.fontFamily}
-- Headings: ${ds.headingStyle}
-- Buttons: ${ds.buttonStyle}
-- Border radius: ${ds.borderRadius}
-- Section padding: ${ds.sectionPadding}
-
-BLOCK TO GENERATE:
-Type: ${block.type}
-Description: ${block.description}
-${animSection}
-
-RULES:
-- Return ONLY raw HTML. No markdown, no code fences, no explanation.
-- CRITICAL: All tags MUST be properly closed (every <div> has </div>, <p> has </p>, etc.). Tilda rejects invalid HTML.
-- Use INLINE CSS for ALL styles. No <style> tags, no classes.
-- Use the EXACT colors and styles from the design system above.
-- Wrap in a single <div> with full-width.
-- Make it responsive (max-width, %, flexbox, clamp()).
-- Use real Unsplash URLs for images: https://images.unsplash.com/photo-{id}?w=800&q=80
-- Content in Russian if the description is in Russian.
-- This block must look like it belongs to a cohesive, premium page.
-- CREATIVE EDGE: Avoid generic centered layouts. Use asymmetry, grid breaks, unexpected spacing, layered depth. Every block should have at least one visual "hook" that makes it memorable.
-- SVG: Use inline <svg> with REAL SVG animations (<animate>, <animateTransform>, <animateMotion>). Icons: animated SVG, not emoji. Hero/decor: large animated SVGs — moving shapes, morphing, flowing gradients. Colors: pick to match design system. Premium, animated visuals.`;
-}
-
-// ─── API Call Helper ───
-
-async function callGemini(apiKey: string, prompt: string, systemPrompt?: string): Promise<string> {
-  const parts = [];
-  if (systemPrompt) parts.push({ text: systemPrompt });
-  parts.push({ text: prompt });
-
-  const response = await fetch(
-    `https://generativelanguage.googleapis.com/v1beta/models/gemini-3.1-pro-preview:generateContent?key=${apiKey}`,
-    {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        contents: [{ parts }],
-        generationConfig: {
-          temperature: 0.85,
-          maxOutputTokens: 8192,
-        },
-      }),
-    }
-  );
-
-  if (!response.ok) {
-    const err = await response.text();
-    throw new Error(`Gemini API (${response.status}): ${err}`);
-  }
-
-  const data = await response.json();
-  const text: string = data?.candidates?.[0]?.content?.parts?.[0]?.text || '';
-  return text.replace(/^```[a-z]*\s*/i, '').replace(/```\s*$/i, '').trim();
-}
+const blockJobRegistry = new Map<string, BlockAgentJob>();
+const BLOCK_AGENT_MAX_RETRIES = 3;
+const BLOCK_AGENT_RETRY_DELAY_MS = 5000;
 
 // ─── Message Handlers ───
 
 interface Message {
   type: string;
   prompt?: string;
+  jobId?: string;
+  planId?: string;
 }
 
 chrome.runtime.onMessage.addListener(
@@ -197,6 +71,41 @@ chrome.runtime.onMessage.addListener(
         .then((html) => sendResponse({ success: true, html }))
         .catch((err: Error) => sendResponse({ success: false, error: err.message }));
       return true;
+    }
+
+    if (message.type === 'START_BLOCK_AGENT') {
+      const msg = message as Message & {
+        planId?: string;
+        designSystem: DesignSystem;
+        block: BlockPlan;
+        blockIndex: number;
+        totalBlocks: number;
+        animOptions?: AnimationOptions;
+      };
+
+      startBlockAgentJob({
+        planId: msg.planId,
+        designSystem: msg.designSystem,
+        block: msg.block,
+        blockIndex: msg.blockIndex,
+        totalBlocks: msg.totalBlocks,
+        animOptions: msg.animOptions,
+      })
+        .then((job) => sendResponse({ success: true, job }))
+        .catch((err: Error) => sendResponse({ success: false, error: err.message }));
+      return true;
+    }
+
+    if (message.type === 'GET_BLOCK_AGENT_STATUS') {
+      const job = message.jobId ? getBlockAgentSnapshot(message.jobId) : null;
+      sendResponse(job ? { success: true, job } : { success: false, error: 'Block agent job not found' });
+      return false;
+    }
+
+    if (message.type === 'GET_BLOCK_AGENT_RESULT') {
+      const job = message.jobId ? getBlockAgentResult(message.jobId) : null;
+      sendResponse(job ? { success: true, job } : { success: false, error: 'Block agent result not found' });
+      return false;
     }
 
     if (message.type === 'GENERATE_SVG_ICON') {
@@ -339,7 +248,14 @@ async function getApiKey(): Promise<string> {
 
 async function handleSingleBlock(prompt: string): Promise<string> {
   const apiKey = await getApiKey();
-  return callGemini(apiKey, prompt, `You are a CREATIVE web designer. Your goal: pages that cause a "wow" effect. No boring, template-like blocks. Use distinctive layouts, bold typography, memorable visual hooks. Generate clean HTML with inline CSS. Return ONLY HTML. No markdown. Use Russian text for Russian prompts. Premium, memorable design.`);
+  const model = await getStoredModel();
+  const raw = await callGemini(apiKey, prompt, {
+    systemPrompt: 'You are a professional Tilda HTML developer. Return ONLY valid HTML for one block. Use inline CSS, production-friendly markup, and visible readable text.',
+    temperature: 0.35,
+    maxOutputTokens: 8192,
+    model,
+  });
+  return extractHtmlText(raw);
 }
 
 const SVG_ICON_SYSTEM = `You are an SVG icon designer. Generate a single inline SVG icon with SMIL or CSS animation.
@@ -356,60 +272,177 @@ const SVG_ANIMATION_SYSTEM = `You are an SVG animation artist. Generate an ANIMA
 
 async function handleGenerateSvgIcon(description: string, size: number): Promise<string> {
   const apiKey = await getApiKey();
+  const model = await getStoredModel();
   const prompt = `Create an SVG icon: ${description}\n\nSize: ${size}x${size}. Return ONLY the <svg>...</svg> element.`;
-  const raw = await callGemini(apiKey, prompt, SVG_ICON_SYSTEM);
+  const raw = await callGemini(apiKey, prompt, { systemPrompt: SVG_ICON_SYSTEM, temperature: 0.4, maxOutputTokens: 4096, model });
   const match = raw.match(/<svg[\s\S]*?<\/svg>/i);
   return match ? match[0] : raw.trim();
 }
 
 async function handleGenerateSvgAnimation(description: string): Promise<string> {
   const apiKey = await getApiKey();
+  const model = await getStoredModel();
   const prompt = `Create an animated SVG: ${description}\n\nReturn ONLY the <svg>...</svg> element with animations inside.`;
-  const raw = await callGemini(apiKey, prompt, SVG_ANIMATION_SYSTEM);
+  const raw = await callGemini(apiKey, prompt, { systemPrompt: SVG_ANIMATION_SYSTEM, temperature: 0.45, maxOutputTokens: 4096, model });
   const match = raw.match(/<svg[\s\S]*?<\/svg>/i);
   return match ? match[0] : raw.trim();
 }
 
-const ORCHESTRATOR_TEMPLATE_ADDON = `
-
-IMPORTANT - REFERENCE TEMPLATE:
-The user provided HTML of a reference page below. You MUST:
-- Extract the visual style from it: colors (hex), typography, spacing, button style.
-- Put those colors into your designSystem (primaryColor, secondaryColor, accentColor, bgLight, bgDark, textColor, textMuted).
-- Match the structure: if the reference has hero, features, CTA, footer — plan similar blocks.
-- Return ONLY the JSON. No explanation.`;
-
 const MAX_TEMPLATE_CHARS = 12000;
-
-const ANIM_PLAN_ADDON = `
-
-ANIMATIONS ENABLED: Plan blocks that maximize visual impact. Prefer:
-- Features/pricing/testimonials as card grids (for stagger + card lift).
-- Clear h1/h2/h3 headings in each block (for text clip reveal).
-- Interactive elements: buttons, icons (for glow hover).
-- Layered sections where parallax adds depth.`;
 
 async function handleAgentPlan(prompt: string, templateHtml?: string, animOpts?: AnimationOptions): Promise<AgentPlan> {
   const apiKey = await getApiKey();
-  let systemPrompt = ORCHESTRATOR_PROMPT;
-  let userPrompt = prompt;
+  const model = await getStoredModel();
+  let systemPrompt = AGENT_ORCHESTRATOR_PROMPT;
+  let userPrompt = `USER REQUEST:\n${prompt}`;
   if (templateHtml?.trim()) {
-    systemPrompt = ORCHESTRATOR_PROMPT + ORCHESTRATOR_TEMPLATE_ADDON;
+    systemPrompt = AGENT_ORCHESTRATOR_PROMPT + AGENT_ORCHESTRATOR_TEMPLATE_ADDON;
     const truncated = templateHtml.trim().length > MAX_TEMPLATE_CHARS
       ? templateHtml.trim().slice(0, MAX_TEMPLATE_CHARS) + '\n...[truncated]'
       : templateHtml.trim();
-    userPrompt = prompt + '\n\nREFERENCE PAGE HTML:\n' + truncated;
+    userPrompt += '\n\nREFERENCE PAGE HTML:\n' + truncated;
   }
   const hasAnim = animOpts && (animOpts.staggerReveal || animOpts.cardLift || animOpts.glowHover || animOpts.textClip || animOpts.parallax);
-  if (hasAnim) userPrompt += ANIM_PLAN_ADDON;
-  const raw = await callGemini(apiKey, userPrompt, systemPrompt);
-  const jsonMatch = raw.match(/\{[\s\S]*\}/);
-  if (!jsonMatch) throw new Error('Не удалось разобрать план от оркестратора');
-  return JSON.parse(jsonMatch[0]) as AgentPlan;
+  if (hasAnim) userPrompt += AGENT_ANIM_PLAN_ADDON;
+  const raw = await callGemini(apiKey, userPrompt, {
+    systemPrompt,
+    temperature: 0.35,
+    maxOutputTokens: 16000,
+    model,
+  });
+  return JSON.parse(extractJsonText(raw)) as AgentPlan;
 }
 
 async function handleAgentBlock(ds: DesignSystem, block: BlockPlan, idx: number, total: number, animOpts?: AnimationOptions): Promise<string> {
   const apiKey = await getApiKey();
-  const prompt = makeBlockPrompt(ds, block, idx, total, animOpts);
-  return callGemini(apiKey, block.description, prompt);
+  const model = await getStoredModel();
+  return runBlockWorker(apiKey, {
+    designSystem: ds,
+    block,
+    blockIndex: idx,
+    totalBlocks: total,
+    animOptions: animOpts,
+    model,
+  });
+}
+
+async function getStoredModel(): Promise<string> {
+  const result = await chrome.storage.local.get(['selectedModel']);
+  return (result as Record<string, string>).selectedModel || 'gemini-2.5-pro';
+}
+
+function isRetryableAgentError(err: string): boolean {
+  return /503|429|500|504|UNAVAILABLE|high demand|Resource exhausted|overloaded/i.test(err || '');
+}
+
+function toBlockAgentSnapshot(job: BlockAgentJob) {
+  return {
+    jobId: job.jobId,
+    planId: job.planId,
+    blockIndex: job.blockIndex,
+    blockType: job.blockType,
+    status: job.status,
+    attempts: job.attempts,
+    maxRetries: job.maxRetries,
+    createdAt: job.createdAt,
+    startedAt: job.startedAt,
+    finishedAt: job.finishedAt,
+    nextRetryAt: job.nextRetryAt,
+    error: job.error,
+  };
+}
+
+function getBlockAgentSnapshot(jobId: string) {
+  const job = blockJobRegistry.get(jobId);
+  return job ? toBlockAgentSnapshot(job) : null;
+}
+
+function getBlockAgentResult(jobId: string) {
+  const job = blockJobRegistry.get(jobId);
+  if (!job) return null;
+  return {
+    ...toBlockAgentSnapshot(job),
+    html: job.html,
+  };
+}
+
+async function startBlockAgentJob(args: {
+  planId?: string;
+  designSystem: DesignSystem;
+  block: BlockPlan;
+  blockIndex: number;
+  totalBlocks: number;
+  animOptions?: AnimationOptions;
+}) {
+  const model = await getStoredModel();
+  const jobId = crypto.randomUUID();
+  const job: BlockAgentJob = {
+    jobId,
+    planId: args.planId,
+    blockIndex: args.blockIndex,
+    blockType: args.block.type,
+    status: 'queued',
+    attempts: 0,
+    maxRetries: BLOCK_AGENT_MAX_RETRIES,
+    createdAt: Date.now(),
+    input: {
+      designSystem: args.designSystem,
+      block: args.block,
+      blockIndex: args.blockIndex,
+      totalBlocks: args.totalBlocks,
+      animOptions: args.animOptions,
+      model,
+    },
+  };
+
+  blockJobRegistry.set(jobId, job);
+  void runBlockAgentJob(jobId);
+  return toBlockAgentSnapshot(job);
+}
+
+async function runBlockAgentJob(jobId: string): Promise<void> {
+  const job = blockJobRegistry.get(jobId);
+  if (!job) return;
+
+  let apiKey = '';
+  try {
+    apiKey = await getApiKey();
+  } catch (err) {
+    job.status = 'error';
+    job.error = err instanceof Error ? err.message : String(err);
+    job.finishedAt = Date.now();
+    return;
+  }
+
+  while (job.attempts < job.maxRetries) {
+    job.attempts += 1;
+    job.status = job.attempts === 1 ? 'running' : 'retrying';
+    job.startedAt = job.startedAt || Date.now();
+    job.nextRetryAt = undefined;
+    job.error = undefined;
+
+    try {
+      const html = await runBlockWorker(apiKey, job.input);
+      job.status = 'success';
+      job.html = html;
+      job.finishedAt = Date.now();
+      return;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      job.error = message;
+
+      if (job.attempts >= job.maxRetries || !isRetryableAgentError(message)) {
+        job.status = 'error';
+        job.finishedAt = Date.now();
+        return;
+      }
+
+      job.status = 'retrying';
+      job.nextRetryAt = Date.now() + BLOCK_AGENT_RETRY_DELAY_MS;
+      await new Promise((resolve) => setTimeout(resolve, BLOCK_AGENT_RETRY_DELAY_MS));
+    }
+  }
+
+  job.status = 'error';
+  job.finishedAt = Date.now();
 }

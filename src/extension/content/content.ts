@@ -62,6 +62,32 @@ interface RecordedAction {
   tpRecordUiHovered: boolean;
 }
 
+interface TestBlock {
+  type: string;
+  html: string;
+}
+
+type BlockAgentJobStatus = 'queued' | 'running' | 'retrying' | 'success' | 'error';
+
+interface BlockAgentJobSnapshot {
+  jobId: string;
+  planId?: string;
+  blockIndex: number;
+  blockType: string;
+  status: BlockAgentJobStatus;
+  attempts: number;
+  maxRetries: number;
+  createdAt: number;
+  startedAt?: number;
+  finishedAt?: number;
+  nextRetryAt?: number;
+  error?: string;
+}
+
+interface BlockAgentJobResult extends BlockAgentJobSnapshot {
+  html?: string;
+}
+
 class TildaSpaceAI {
   private shadow: ShadowRoot;
   private panel: HTMLElement;
@@ -72,6 +98,7 @@ class TildaSpaceAI {
   private recordedActions: RecordedAction[] = [];
   private recordingCounter = 0;
   private lastRecordTs = 0;
+  private readonly testBlockMinLength = 2500;
 
   constructor() {
     const host = document.createElement('div');
@@ -89,6 +116,7 @@ class TildaSpaceAI {
     this.shadow.appendChild(this.fab);
 
     this.setupClickRecorder();
+    this.setupRuntimeHandlers();
     this.checkApiKey();
 
     chrome.storage.onChanged.addListener((changes, namespace) => {
@@ -96,6 +124,44 @@ class TildaSpaceAI {
         this.checkApiKey();
       }
     });
+  }
+
+  private setupRuntimeHandlers() {
+    chrome.runtime.onMessage.addListener((message: { type?: string; html?: string }, _sender, sendResponse) => {
+      if (message.type === 'GET_PAGE_HTML') {
+        sendResponse({ html: this.getCurrentPageHtml() });
+        return false;
+      }
+
+      if (message.type === 'INSERT_BLOCK') {
+        const html = typeof message.html === 'string' ? message.html : '';
+        if (!html.trim()) {
+          sendResponse({ success: false, error: 'Пустой HTML блок' });
+          return false;
+        }
+
+        this.insertBlockIntoTilda(html)
+          .then((success) => sendResponse(success
+            ? { success: true }
+            : { success: false, error: 'Не удалось вставить HTML в Tilda' }))
+          .catch((err: Error) => sendResponse({ success: false, error: err.message }));
+
+        return true;
+      }
+
+      return false;
+    });
+  }
+
+  private getCurrentPageHtml(): string {
+    const mainContent = document.querySelector('#allrecords')
+      || document.querySelector('.t-container')
+      || document.querySelector('main')
+      || document.body;
+
+    return mainContent === document.body
+      ? document.documentElement.outerHTML
+      : (mainContent as HTMLElement).innerHTML;
   }
 
   private setupClickRecorder() {
@@ -272,7 +338,11 @@ class TildaSpaceAI {
     panel.className = 'ts-panel';
     panel.innerHTML = `
       <div class="ts-header">
-        <h2>✨ Tilda Space AI</h2>
+        <div class="ts-header-copy">
+          <div class="ts-header-badge">AI page system</div>
+          <h2>Tilda Space AI</h2>
+          <div class="ts-header-meta">Генерация блоков, ordered insert и тесты прямо внутри редактора</div>
+        </div>
         <button class="ts-close">✕</button>
       </div>
       <div class="ts-body" id="ts-body"></div>
@@ -296,29 +366,62 @@ class TildaSpaceAI {
 
   private renderNoKeyUI() {
     const body = this.getBody();
-    body.innerHTML = `<div class="ts-no-key"><p>🔑 Задайте API ключ Gemini в настройках расширения</p><button class="ts-btn-open">Открыть настройки</button></div>`;
+    body.innerHTML = `
+      <div class="ts-no-key">
+        <div class="ts-empty-state">
+          <div class="ts-header-badge">Setup required</div>
+          <h3>Сначала подключи Gemini API</h3>
+          <p>После сохранения ключа панель откроет генерацию блоков, SVG-инструменты, тест 7 больших секций и вставку в Tilda по очереди.</p>
+          <div class="ts-empty-actions">
+            <button class="ts-btn-open">Открыть настройки</button>
+          </div>
+        </div>
+      </div>
+    `;
     body.querySelector('.ts-btn-open')!.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }));
   }
 
   private renderPromptUI() {
     const body = this.getBody();
     body.innerHTML = `
-      <div class="ts-prompt-area">
-        <textarea id="ts-prompt" placeholder="Опишите сайт, который нужно создать...&#10;&#10;Система агентов создаст каждый блок в едином дизайне и вставит в Tilda"></textarea>
+      <div class="ts-hero-card">
+        <div class="ts-hero-badge">Parallel block agents</div>
+        <div class="ts-hero-title">Собирай страницу как продакшн-сценарий, а не как набор случайных кнопок</div>
+        <div class="ts-hero-text">Один orchestrator проектирует страницу, дальше отдельный агент генерирует каждый блок, а вставка в Tilda идёт строго по порядку.</div>
+        <div class="ts-hero-metrics">
+          <div class="ts-metric"><strong>1</strong><span>общий дизайн-план страницы</span></div>
+          <div class="ts-metric"><strong>N</strong><span>отдельных block-agent job</span></div>
+          <div class="ts-metric"><strong>Queue</strong><span>ordered insert без ломания структуры</span></div>
+        </div>
       </div>
-      <div class="ts-template-row" style="display: none;">
-        <button class="ts-template-btn" id="ts-use-as-template" type="button">📄 Использовать эту страницу как шаблон</button>
-        <div class="ts-template-status" id="ts-template-status"></div>
+
+      <div class="ts-section">
+        <div class="ts-section-head">
+          <div class="ts-section-title">Бриф страницы</div>
+          <div class="ts-section-subtitle">Опиши оффер, стиль и блоки. Панель сохранит единый tone of voice и соберёт страницу в одной системе.</div>
+        </div>
+        <div class="ts-prompt-area">
+          <textarea id="ts-prompt" placeholder="Опишите сайт, который нужно создать...&#10;&#10;Например: premium лендинг для AI-сервиса, hero + benefits + cases + FAQ + CTA, строгий dark tech стиль."></textarea>
+        </div>
+        <div class="ts-template-row" style="display: none;">
+          <button class="ts-template-btn" id="ts-use-as-template" type="button">📄 Использовать эту страницу как шаблон</button>
+          <div class="ts-template-status" id="ts-template-status"></div>
+        </div>
+        <div class="ts-mode-row">
+          <label class="ts-mode-label">
+            <input type="checkbox" id="ts-single-block" />
+            <span>Только 1 блок для быстрого прогона и локальной проверки цепочки</span>
+          </label>
+        </div>
       </div>
-      <div class="ts-mode-row">
-        <label class="ts-mode-label">
-          <input type="checkbox" id="ts-single-block" />
-          <span>Только 1 блок (для теста)</span>
-        </label>
-      </div>
+
       <div class="ts-anim-row">
+        <div class="ts-section-head">
+          <div class="ts-section-title">Анимации и visual hints</div>
+          <div class="ts-section-subtitle">Это не отдельный конструктор эффектов, а подсказки для агентов, чтобы они строили блоки под нужный визуальный ритм.</div>
+        </div>
         <div class="ts-anim-header">
-          <span class="ts-anim-title">✨ Дизайнерские анимации</span>
+          <span class="ts-anim-title">Пресеты анимаций</span>
           <div class="ts-anim-presets">
             <button type="button" class="ts-anim-preset" data-preset="none">Выкл</button>
             <button type="button" class="ts-anim-preset" data-preset="light">Лёгкие</button>
@@ -350,6 +453,7 @@ class TildaSpaceAI {
           </div>
         </div>
       </div>
+
       <div class="ts-recorder-row">
         <span class="ts-recorder-title">📹 Запись действий</span>
         <div class="ts-recorder-btns">
@@ -359,6 +463,7 @@ class TildaSpaceAI {
           <button class="ts-recorder-copy-steps" id="ts-recorder-copy-steps" type="button" disabled title="Пошаговый лог">Скопировать пошагово</button>
         </div>
       </div>
+
       <div class="ts-svg-row">
         <span class="ts-svg-title">🎨 SVG генератор</span>
         <div class="ts-svg-section">
@@ -376,7 +481,10 @@ class TildaSpaceAI {
           <button type="button" id="ts-svg-copy" class="ts-svg-copy">📋 Копировать SVG</button>
         </div>
       </div>
-      <button class="ts-generate-btn" id="ts-generate">🤖 Запустить агентов</button>
+      <div class="ts-generate-actions">
+        <button class="ts-generate-btn" id="ts-generate">🤖 Запустить агентов</button>
+        <button class="ts-test-btn" id="ts-test-large-blocks" type="button">🧪 Проверка 7 больших блоков</button>
+      </div>
       <div class="ts-suggestions">
         <p>ГОТОВЫЕ СЦЕНАРИИ · 2026</p>
         <button class="ts-suggestion ts-suggestion-kvai" data-prompt="Лендинг AI-сервиса. Блоки: hero (градиент #694be8→#8167f0, заголовок + CTA), 3–4 карточки преимуществ, тарифы с иконками и ценами, FAQ аккордеон, отзывы 3 шт, CTA, footer. Design system: primary #694be8, accent #e9cc57, bg #0f0f14, text #fff. Border-radius 12px, padding 24px. Premium, конверсионный.">🔮 KV-AI Premium</button>
@@ -404,6 +512,7 @@ class TildaSpaceAI {
 
     const promptEl = body.querySelector('#ts-prompt') as HTMLTextAreaElement;
     const generateBtn = body.querySelector('#ts-generate') as HTMLButtonElement;
+    const testLargeBlocksBtn = body.querySelector('#ts-test-large-blocks') as HTMLButtonElement;
 
     // Предотвращаем перехват Tilda: буквы П (P) и С (C) и вставка ссылок.
     // stopPropagation в фазе bubble — символ успевает напечататься, событие не доходит до Tilda.
@@ -460,6 +569,12 @@ class TildaSpaceAI {
         this.runAgents(p, singleBlock, getAnimationOptions());
       }
     });
+
+    if (testLargeBlocksBtn) {
+      testLargeBlocksBtn.addEventListener('click', () => {
+        this.runLargeBlockTest(getAnimationOptions());
+      });
+    }
 
     promptEl.addEventListener('keydown', (e: KeyboardEvent) => {
       if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
@@ -663,9 +778,84 @@ class TildaSpaceAI {
     }
   }
 
+  private async startBlockAgentJobs(
+    planId: string,
+    designSystem: DesignSystem,
+    blocks: BlockPlan[],
+    animOptions: AnimationOptions
+  ): Promise<Map<number, string>> {
+    const jobEntries = await Promise.all(blocks.map(async (block, index) => {
+      const resp = await this.sendMessage({
+        type: 'START_BLOCK_AGENT',
+        planId,
+        designSystem,
+        block,
+        blockIndex: index,
+        totalBlocks: blocks.length,
+        animOptions,
+      }) as { success: boolean; job?: BlockAgentJobSnapshot; error?: string };
+
+      if (!resp.success || !resp.job) {
+        throw new Error(resp.error || `Не удалось запустить агент блока ${index + 1}`);
+      }
+
+      return [index, resp.job.jobId] as const;
+    }));
+
+    return new Map(jobEntries);
+  }
+
+  private async getBlockAgentStatus(jobId: string): Promise<BlockAgentJobSnapshot> {
+    const resp = await this.sendMessage({
+      type: 'GET_BLOCK_AGENT_STATUS',
+      jobId,
+    }) as { success: boolean; job?: BlockAgentJobSnapshot; error?: string };
+
+    if (!resp.success || !resp.job) {
+      throw new Error(resp.error || `Не удалось получить статус job ${jobId}`);
+    }
+
+    return resp.job;
+  }
+
+  private async getBlockAgentResult(jobId: string): Promise<BlockAgentJobResult> {
+    const resp = await this.sendMessage({
+      type: 'GET_BLOCK_AGENT_RESULT',
+      jobId,
+    }) as { success: boolean; job?: BlockAgentJobResult; error?: string };
+
+    if (!resp.success || !resp.job) {
+      throw new Error(resp.error || `Не удалось получить результат job ${jobId}`);
+    }
+
+    return resp.job;
+  }
+
+  private describeBlockAgentStatus(snapshot: BlockAgentJobSnapshot): { icon: string; text: string } {
+    if (snapshot.status === 'queued') {
+      return { icon: '⏳', text: 'В очереди...' };
+    }
+    if (snapshot.status === 'running') {
+      return { icon: '🤖', text: `Агент работает (${snapshot.attempts}/${snapshot.maxRetries})...` };
+    }
+    if (snapshot.status === 'retrying') {
+      return { icon: '🔄', text: `Повтор (${snapshot.attempts}/${snapshot.maxRetries})...` };
+    }
+    if (snapshot.status === 'success') {
+      return { icon: '✅', text: 'Готов к вставке' };
+    }
+    return { icon: '❌', text: snapshot.error ? `Ошибка: ${snapshot.error}` : 'Ошибка генерации' };
+  }
+
+  private collectGeneratedHtml(): string {
+    return this.generatedBlocks.filter(Boolean).join('\n\n');
+  }
+
   private async runAgents(prompt: string, singleBlockMode = false, animOptions: AnimationOptions = { staggerReveal: false, fadeInUp: false, zoomIn: false, cardLift: false, glowHover: false, tiltHover: false, textClip: false, parallax: false, floatSubtle: false }) {
     const generateBtn = this.shadow.querySelector('#ts-generate') as HTMLButtonElement;
+    const testBtn = this.shadow.querySelector('#ts-test-large-blocks') as HTMLButtonElement | null;
     generateBtn.disabled = true;
+    if (testBtn) testBtn.disabled = true;
     generateBtn.textContent = '🤖 Агенты работают...';
     this.generatedBlocks = [];
     this.clearDebugLog();
@@ -722,7 +912,7 @@ class TildaSpaceAI {
       if (singleBlockMode) {
         this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#eab308"><div class="ts-agent-title">⚠️ Режим теста: генерирую только 1 блок</div></div>`);
       }
-      this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#3b82f6"><div class="ts-agent-title">⚡ Генерация блоков (параллельно)</div><div class="ts-agent-status" style="font-size:11px;color:#64748b">Ожидайте завершения всех блоков...</div></div>`);
+      this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#3b82f6"><div class="ts-agent-title">⚡ Генерация блоков (отдельный агент на блок)</div><div class="ts-agent-status" style="font-size:11px;color:#64748b">Запускаю изолированные block-agent job для всех блоков...</div></div>`);
       for (let i = 0; i < blocksToGenerate.length; i++) {
         const block = blocksToGenerate[i];
         this.appendLog(`
@@ -735,63 +925,77 @@ class TildaSpaceAI {
           </div>
         `);
       }
-      const MAX_RETRIES = 3;
-      const RETRY_DELAY_MS = 5000;
-      const isRetryableError = (err: string) =>
-        /503|429|500|504|UNAVAILABLE|high demand|Resource exhausted|overloaded/i.test(err || '');
+      const planId = crypto.randomUUID();
+      const blockJobIds = await this.startBlockAgentJobs(planId, plan.designSystem, blocksToGenerate, animOptions);
+      const terminalSnapshots = new Map<number, BlockAgentJobSnapshot>();
+      const fetchedResults = new Set<number>();
+      const completedHtmlByIndex = new Map<number, string>();
+      let nextInsertIndex = 0;
+      let insertQueueAnnounced = false;
 
-      const generateBlockWithRetry = async (block: { type: string; description: string }, i: number) => {
-        for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
-          const resp = await this.sendMessage({
-            type: 'AGENT_BLOCK',
-            designSystem: plan.designSystem,
-            block,
-            blockIndex: i,
-            totalBlocks: blocksToGenerate.length,
-            animOptions,
-          }) as { success: boolean; html?: string; error?: string };
-          if (resp.success && resp.html) {
-            this.updateBlockStatus(i, '✅', 'Готово');
-            this.debugLog(`Блок ${i + 1} готов, длина: ${resp.html.length}`);
-            return { index: i, success: true, html: resp.html };
+      while (terminalSnapshots.size < blocksToGenerate.length) {
+        const pendingIndexes = [...blockJobIds.keys()].filter((index) => !terminalSnapshots.has(index));
+        const pendingSnapshots = await Promise.all(pendingIndexes.map(async (index) => {
+          const snapshot = await this.getBlockAgentStatus(blockJobIds.get(index)!);
+          return { index, snapshot };
+        }));
+
+        for (const { index, snapshot } of pendingSnapshots) {
+          const statusInfo = this.describeBlockAgentStatus(snapshot);
+          this.updateBlockStatus(index, statusInfo.icon, statusInfo.text);
+
+          if (snapshot.status === 'success' || snapshot.status === 'error') {
+            terminalSnapshots.set(index, snapshot);
           }
-          const errMsg = resp.error || 'unknown';
-          if (attempt < MAX_RETRIES && isRetryableError(errMsg)) {
-            this.updateBlockStatus(i, '🔄', `Повтор (${attempt}/${MAX_RETRIES})...`);
-            this.debugLog(`Блок ${i + 1}: ${errMsg} → повтор через ${RETRY_DELAY_MS / 1000}с`);
-            await new Promise((r) => setTimeout(r, RETRY_DELAY_MS));
-          } else {
-            this.updateBlockStatus(i, '❌', `Ошибка: ${errMsg}`);
-            this.debugLog(`❌ Блок ${i + 1}: ${errMsg}`);
-            return { index: i, success: false, error: errMsg };
+
+          if (snapshot.status === 'success' && !fetchedResults.has(index)) {
+            const result = await this.getBlockAgentResult(snapshot.jobId);
+            if (!result.html) {
+              terminalSnapshots.set(index, { ...snapshot, status: 'error', error: 'Агент завершился без HTML' });
+              this.updateBlockStatus(index, '❌', 'Ошибка: агент завершился без HTML');
+              continue;
+            }
+            fetchedResults.add(index);
+            completedHtmlByIndex.set(index, result.html);
+            this.generatedBlocks[index] = result.html;
+            this.debugLog(`Блок ${index + 1} готов worker-agent'ом, длина: ${result.html.length}`);
           }
         }
-        return { index: i, success: false, error: 'unknown' };
-      };
 
-      const blockPromises = blocksToGenerate.map((block, i) => generateBlockWithRetry(block, i));
-      const blockResults = await Promise.all(blockPromises);
-      const successfulBlocks: { index: number; html: string }[] = blockResults
-        .filter((r): r is { index: number; success: true; html: string } => r.success === true && !!r.html)
-        .map(r => ({ index: r.index, html: r.html }));
-      successfulBlocks.forEach(({ html }) => this.generatedBlocks.push(html));
-      this.debugLog(`Параллельная генерация завершена: ${successfulBlocks.length}/${blocksToGenerate.length} блоков`);
+        if (!insertQueueAnnounced && completedHtmlByIndex.size > 0) {
+          this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#8b5cf6"><div class="ts-agent-title">📥 Ordered insert queue</div><div class="ts-agent-status" style="font-size:11px;color:#64748b">Вставляю только следующий готовый блок по порядку...</div></div>`);
+          insertQueueAnnounced = true;
+        }
 
-      // Phase 2b: Вставляем блоки ПО ОДНОМУ (Tilda не поддерживает параллельную вставку)
-      this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#8b5cf6"><div class="ts-agent-title">📥 Публикация в Tilda (по одному)</div></div>`);
-      for (let j = 0; j < successfulBlocks.length; j++) {
-        const { index: originalIndex, html } = successfulBlocks[j];
-        const htmlPreview = html.length > 1500 ? html.slice(0, 1500) + '...[обрезано]' : html;
-        this.debugLog(`--- КОД БЛОКА ${originalIndex + 1} (начало) ---`);
-        this.debugLog(`<pre style="margin:4px 0;font-size:10px;overflow:auto;max-height:150px">${this.escapeHtml(htmlPreview)}</pre>`);
-        this.debugLog(`--- конец превью ---`);
-        this.updateBlockStatus(originalIndex, '📥', 'Вставляю в Tilda...');
-        const inserted = await this.insertBlockIntoTilda(html, j, animOptions);
-        this.updateBlockStatus(originalIndex, inserted ? '✅' : '📋', inserted ? 'Вставлен' : 'Скопирован');
+        while (completedHtmlByIndex.has(nextInsertIndex)) {
+          const html = completedHtmlByIndex.get(nextInsertIndex)!;
+          const htmlPreview = html.length > 1500 ? html.slice(0, 1500) + '...[обрезано]' : html;
+          this.debugLog(`--- КОД БЛОКА ${nextInsertIndex + 1} (начало) ---`);
+          this.debugLog(`<pre style="margin:4px 0;font-size:10px;overflow:auto;max-height:150px">${this.escapeHtml(htmlPreview)}</pre>`);
+          this.debugLog(`--- конец превью ---`);
+          this.updateBlockStatus(nextInsertIndex, '📥', 'Вставляю в Tilda...');
+          const inserted = await this.insertBlockIntoTilda(html, nextInsertIndex, animOptions);
+          this.updateBlockStatus(nextInsertIndex, inserted ? '✅' : '📋', inserted ? 'Вставлен' : 'Скопирован');
+          completedHtmlByIndex.delete(nextInsertIndex);
+          nextInsertIndex += 1;
+        }
+
+        if (pendingIndexes.length > 0) {
+          await this.wait(1200);
+        }
+      }
+
+      const successfulCount = fetchedResults.size;
+      this.debugLog(`Параллельная генерация завершена: ${successfulCount}/${blocksToGenerate.length} блоков`);
+
+      const firstFailedIndex = blocksToGenerate.findIndex((_, index) => terminalSnapshots.get(index)?.status === 'error');
+      if (firstFailedIndex !== -1 && nextInsertIndex <= firstFailedIndex) {
+        this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#ef4444"><div class="ts-agent-title">⛔ Ordered insert queue остановлена</div><div class="ts-agent-status" style="font-size:11px;color:#991b1b">Блок ${firstFailedIndex + 1} завершился ошибкой, поэтому следующие блоки не вставлялись вне очереди.</div></div>`);
       }
 
       // Phase 3: Publish (только если не режим "1 блок")
-      if (!singleBlockMode) {
+      const canPublish = !singleBlockMode && terminalSnapshots.size === blocksToGenerate.length && [...terminalSnapshots.values()].every((snapshot) => snapshot.status === 'success') && nextInsertIndex === blocksToGenerate.length;
+      if (canPublish) {
         this.appendLog(`
         <div class="ts-agent-phase" id="ts-publish">
           <div class="ts-agent-title">🚀 Публикация</div>
@@ -811,14 +1015,95 @@ class TildaSpaceAI {
             ? `<div class="ts-agent-title">🚀 Публикация ✓</div><div class="ts-agent-status" style="color:#166534">Страница опубликована!</div>`
             : `<div class="ts-agent-title">🚀 Публикация</div><div class="ts-agent-status" style="color:#92400e">Нажмите "Опубликовать" вручную</div>`;
         }
+      } else if (!singleBlockMode) {
+        this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#f59e0b"><div class="ts-agent-title">🚀 Публикация пропущена</div><div class="ts-agent-status" style="color:#92400e">Страница не опубликована автоматически: не все block-agent job завершились успешно и по порядку вставились в Tilda.</div></div>`);
       }
 
       // Final summary (всегда показываем)
+      const readyBlocksCount = this.generatedBlocks.filter(Boolean).length;
       this.appendLog(`
         <div class="ts-agent-done">
           <div style="font-size:20px;margin-bottom:8px">🎉</div>
-          <div style="font-weight:700;margin-bottom:4px">${this.generatedBlocks.length} блоков создано!</div>
-          <div style="font-size:12px;color:#64748b">Страница собрана в едином дизайне</div>
+          <div style="font-weight:700;margin-bottom:4px">${readyBlocksCount} блоков создано!</div>
+          <div style="font-size:12px;color:#64748b">Генерация выполнена через отдельные block-agent job, вставка шла через ordered queue</div>
+          <button class="ts-action-btn ts-btn-copy" id="ts-copy-all" style="margin-top:12px;width:100%">📋 Копировать весь HTML</button>
+        </div>
+      `);
+
+      const copyAllBtn = this.shadow.querySelector('#ts-copy-all');
+      if (copyAllBtn) {
+        copyAllBtn.addEventListener('click', () => {
+          const fullHtml = this.collectGeneratedHtml();
+          this.clipboardWrite(fullHtml);
+          (copyAllBtn as HTMLElement).textContent = '✓ Скопировано!';
+        });
+      }
+
+    } catch (err) {
+      this.debugLog(`❌ Критическая ошибка: ${err instanceof Error ? err.message : String(err)}`);
+      this.appendLog(`<div class="ts-error">❌ ${err instanceof Error ? err.message : 'Ошибка'}</div>`);
+    } finally {
+      generateBtn.disabled = false;
+      generateBtn.textContent = '🤖 Запустить агентов';
+      if (testBtn) testBtn.disabled = false;
+    }
+  }
+
+  private formatHtmlSize(length: number): string {
+    return `${(length / 1024).toFixed(1)} KB`;
+  }
+
+  private async runLargeBlockTest(animOptions: AnimationOptions) {
+    const generateBtn = this.shadow.querySelector('#ts-generate') as HTMLButtonElement | null;
+    const testBtn = this.shadow.querySelector('#ts-test-large-blocks') as HTMLButtonElement | null;
+    if (!testBtn || testBtn.disabled) return;
+
+    if (generateBtn) generateBtn.disabled = true;
+    testBtn.disabled = true;
+    testBtn.textContent = '🧪 Готовлю большие блоки...';
+    this.generatedBlocks = [];
+    this.clearDebugLog();
+    this.debugLog('▶ Запуск локального теста 7 больших блоков...');
+
+    try {
+      const blocks = this.createLargeTestBlocks();
+      this.log(`
+        <div class="ts-agent-phase done">
+          <div class="ts-agent-title">🧪 Локальная проверка кода</div>
+          <div class="ts-agent-status" style="color:#92400e">
+            7 заранее подготовленных больших HTML-блоков без Gemini
+          </div>
+        </div>
+      `);
+
+      blocks.forEach((block, index) => {
+        this.appendLog(`
+          <div class="ts-agent-phase" id="ts-block-${index}">
+            <div class="ts-agent-title">🧱 Блок ${index + 1}/${blocks.length}: ${block.type}</div>
+            <div class="ts-agent-status">📄 Код подготовлен: ${this.formatHtmlSize(block.html.length)}</div>
+          </div>
+        `);
+      });
+
+      this.generatedBlocks = blocks.map((block) => block.html);
+      this.debugLog(`Подготовлено ${blocks.length} тестовых блоков`);
+
+      this.appendLog(`<div class="ts-agent-phase" style="border-left-color:#8b5cf6"><div class="ts-agent-title">📥 Вставка тестовых блоков в Tilda</div></div>`);
+
+      for (let index = 0; index < blocks.length; index++) {
+        const block = blocks[index];
+        const sizeText = this.formatHtmlSize(block.html.length);
+        this.updateBlockStatus(index, '📥', `Вставляю в Tilda... ${sizeText}`);
+        this.debugLog(`Тестовый блок ${index + 1}: ${block.type}, длина ${block.html.length}`);
+        const inserted = await this.insertBlockIntoTilda(block.html, index, animOptions);
+        this.updateBlockStatus(index, inserted ? '✅' : '📋', inserted ? `Вставлен (${sizeText})` : `Скопирован (${sizeText})`);
+      }
+
+      this.appendLog(`
+        <div class="ts-agent-done">
+          <div style="font-size:20px;margin-bottom:8px">🧪</div>
+          <div style="font-weight:700;margin-bottom:4px">${blocks.length} тестовых блоков готовы</div>
+          <div style="font-size:12px;color:#64748b">Большой заранее подготовленный код проверен без Gemini</div>
           <button class="ts-action-btn ts-btn-copy" id="ts-copy-all" style="margin-top:12px;width:100%">📋 Копировать весь HTML</button>
         </div>
       `);
@@ -831,14 +1116,299 @@ class TildaSpaceAI {
           (copyAllBtn as HTMLElement).textContent = '✓ Скопировано!';
         });
       }
-
     } catch (err) {
-      this.debugLog(`❌ Критическая ошибка: ${err instanceof Error ? err.message : String(err)}`);
-      this.appendLog(`<div class="ts-error">❌ ${err instanceof Error ? err.message : 'Ошибка'}</div>`);
+      this.debugLog(`❌ Локальный тест: ${err instanceof Error ? err.message : String(err)}`);
+      this.appendLog(`<div class="ts-error">❌ ${err instanceof Error ? err.message : 'Ошибка локального теста'}</div>`);
     } finally {
-      generateBtn.disabled = false;
-      generateBtn.textContent = '🤖 Запустить агентов';
+      if (generateBtn) generateBtn.disabled = false;
+      testBtn.disabled = false;
+      testBtn.textContent = '🧪 Проверка 7 больших блоков';
     }
+  }
+
+  private createLargeTestBlocks(): TestBlock[] {
+    const palette = {
+      primary: '#694be8',
+      secondary: '#8167f0',
+      accent: '#e9cc57',
+      light: '#f8f7ff',
+      dark: '#17132b',
+      text: '#120f26',
+      muted: '#6b6784'
+    };
+
+    const metricCards = [
+      ['14 мин', 'Среднее время от идеи до первой версии страницы'],
+      ['7 блоков', 'Полный тестовый сценарий для вставки по порядку'],
+      ['0 ручных правок', 'Когда структура и стиль попадают в ожидание с первой попытки']
+    ];
+
+    const featureCards = [
+      ['AI-стратегия', 'Собирает структуру страницы, тезисы и акценты под конкретный оффер за один прогон.'],
+      ['SVG и анимации', 'Добавляет иконки, glow-эффекты, мягкие hover-сценарии и аккуратную глубину интерфейса.'],
+      ['Tilda-ready HTML', 'На выходе получается код, который удобно вставлять блоками и сразу проверять в редакторе.'],
+      ['Сценарии промптов', 'Можно быстро переключаться между кейсами: SaaS, агентства, портфолио, продукты и лендинги.'],
+      ['Единая дизайн-система', 'Цвета, радиусы, тени и типографика живут в одном наборе и не расползаются между секциями.'],
+      ['Поток тестирования', 'Проверочный режим помогает быстро гонять длинные HTML-блоки без вызовов Gemini API.']
+    ];
+
+    const cases = [
+      ['EdTech-платформа', 'Собрали hero, сетку преимуществ, кейсы преподавателей и CTA для демо-записи.'],
+      ['B2B SaaS', 'Сделали плотный enterprise-лендинг с метриками, сравнением сценариев и FAQ.'],
+      ['Агентство', 'Подняли дорогую подачу с сильным оффером, процессом работы и витриной кейсов.'],
+      ['AI-продукт', 'Отдельно протестировали длинные кодовые блоки для устойчивой вставки в Tilda.']
+    ];
+
+    const steps = [
+      ['01', 'Бриф и контекст', 'Сначала задаём бизнес-задачу, тональность, аудиторию и визуальный референс.'],
+      ['02', 'План страницы', 'Оркестратор разбивает страницу на блоки, чтобы каждый агент работал по точному ТЗ.'],
+      ['03', 'Генерация HTML', 'Каждый блок получает крупный, подробный и вставляемый код без пустых заглушек.'],
+      ['04', 'Вставка и проверка', 'Сравниваем объём кода, тестируем вставку, оцениваем визуальный результат в Tilda.']
+    ];
+
+    const faqs = [
+      ['Зачем нужен режим проверки?', 'Он позволяет быстро проверить вставку больших HTML-блоков без ожидания ответа от модели и без расхода токенов.'],
+      ['Почему именно 7 блоков?', 'Это удобный полный сценарий страницы: hero, доверие, возможности, кейсы, процесс, FAQ и финальный CTA.'],
+      ['Что значит "большой код"?', 'Мы специально делаем плотный HTML с карточками, списками, метриками и вложенной структурой, чтобы стресс-тест был ближе к реальной генерации.'],
+      ['Можно ли эти блоки вставлять в Tilda?', 'Да, они вставляются так же, как обычные результаты генерации: по одному блоку в стандартный пайплайн.']
+    ];
+
+    const heroHtml = `
+<section style="padding:96px 0;background:radial-gradient(circle at top left, rgba(233,204,87,0.30), transparent 24%), linear-gradient(135deg, ${palette.dark} 0%, #231c45 52%, ${palette.primary} 100%);font-family:Inter,system-ui,sans-serif;color:#ffffff;box-sizing:border-box;">
+  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
+    <div style="display:grid;grid-template-columns:1.15fr 0.85fr;gap:32px;align-items:center;">
+      <div>
+        <div style="display:inline-flex;align-items:center;gap:10px;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.18);font-size:13px;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;">
+          <span style="width:9px;height:9px;border-radius:50%;background:${palette.accent};box-shadow:0 0 18px rgba(233,204,87,0.8);display:inline-block;"></span>
+          Локальная проверка 7 больших блоков
+        </div>
+        <h1 style="font-size:64px;line-height:1.02;font-weight:800;letter-spacing:-0.04em;margin:22px 0 18px;max-width:760px;">Проверяем длинный HTML-код так, будто страница уже готова к продакшену.</h1>
+        <p style="font-size:20px;line-height:1.7;color:rgba(255,255,255,0.82);max-width:720px;margin:0 0 28px;">Этот hero создан специально для стресс-теста: длинные строки, вложенные сетки, большие карточки, насыщенная типографика и несколько слоёв декоративных элементов. Если такой блок стабильно вставляется в Tilda, значит и реальные большие генерации будут проходить заметно спокойнее.</p>
+        <div style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:30px;">
+          <a href="#" style="display:inline-flex;align-items:center;justify-content:center;padding:16px 30px;border-radius:14px;background:${palette.accent};color:${palette.text};font-weight:800;text-decoration:none;box-shadow:0 18px 40px rgba(233,204,87,0.28);transition:all .3s ease;">Проверить вставку</a>
+          <a href="#" style="display:inline-flex;align-items:center;justify-content:center;padding:16px 30px;border-radius:14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;font-weight:700;text-decoration:none;transition:all .3s ease;">Скопировать код блока</a>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;">
+          ${metricCards.map(([value, label]) => `
+            <div style="padding:18px;border-radius:18px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);backdrop-filter:blur(14px);">
+              <div style="font-size:28px;font-weight:800;margin-bottom:6px;">${value}</div>
+              <div style="font-size:14px;line-height:1.5;color:rgba(255,255,255,0.74);">${label}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+      <div>
+        <div style="position:relative;padding:24px;border-radius:28px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);box-shadow:0 30px 60px rgba(0,0,0,0.24);overflow:hidden;">
+          <div style="position:absolute;inset:auto -60px -80px auto;width:220px;height:220px;background:radial-gradient(circle, rgba(233,204,87,0.45), transparent 70%);"></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
+            <div>
+              <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.55);margin-bottom:6px;">Prepared code monitor</div>
+              <div style="font-size:22px;font-weight:800;">Block size dashboard</div>
+            </div>
+            <div style="padding:10px 14px;border-radius:999px;background:rgba(233,204,87,0.18);color:${palette.accent};font-size:12px;font-weight:800;">READY</div>
+          </div>
+          <div style="display:grid;gap:12px;">
+            ${['Hero block / 5.4 KB', 'Features block / 6.1 KB', 'Cases block / 4.8 KB', 'FAQ block / 4.4 KB'].map((row, idx) => `
+              <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 16px;border-radius:16px;background:rgba(14,11,30,0.34);border:1px solid rgba(255,255,255,0.08);">
+                <div>
+                  <div style="font-size:15px;font-weight:700;margin-bottom:4px;">${row}</div>
+                  <div style="font-size:13px;line-height:1.5;color:rgba(255,255,255,0.66);">Секция ${idx + 1} готова к копированию, предпросмотру и вставке без повторного прогона модели.</div>
+                </div>
+                <div style="width:12px;height:12px;border-radius:50%;background:${idx % 2 === 0 ? palette.accent : '#7dd3fc'};box-shadow:0 0 14px rgba(255,255,255,0.38);"></div>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>`.trim();
+
+    const trustHtml = `
+<section style="padding:88px 0;background:${palette.light};font-family:Inter,system-ui,sans-serif;color:${palette.text};box-sizing:border-box;">
+  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
+    <div style="display:flex;flex-wrap:wrap;align-items:end;justify-content:space-between;gap:20px;margin-bottom:28px;">
+      <div style="max-width:740px;">
+        <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.primary};margin-bottom:12px;">Доверие и контекст</div>
+        <h2 style="font-size:42px;line-height:1.08;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Второй блок специально плотный: логотипы, тезисы, цифры и длинные подписи в одном экране.</h2>
+        <p style="font-size:18px;line-height:1.75;color:${palette.muted};margin:0;">Такой формат помогает быстро понять, не ломается ли вёрстка на карточках доверия, длинных строках и насыщенных текстовых массивах, когда блок уже готов к настоящей вставке в проект.</p>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:12px;min-width:320px;">
+        ${[['92%', 'совпадения по визуальному тону'], ['5.8 KB', 'средний объём HTML на секцию'], ['14 слоёв', 'включая бейджи, метрики и подписи'], ['1 клик', 'до копирования или вставки в Tilda']].map(([value, label]) => `
+          <div style="padding:18px;border-radius:18px;background:#fff;border:1px solid rgba(105,75,232,0.12);box-shadow:0 12px 30px rgba(18,15,38,0.05);">
+            <div style="font-size:26px;font-weight:800;color:${palette.primary};margin-bottom:6px;">${value}</div>
+            <div style="font-size:14px;line-height:1.5;color:${palette.muted};">${label}</div>
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;">
+      ${['KV-AI Studio', 'Launchbase', 'Tilda Labs', 'Growth Signals', 'Design Ops', 'Prompt Flow', 'Page Forge', 'Studio Nine'].map((name, index) => `
+        <div style="padding:18px 20px;border-radius:18px;background:${index % 2 ? '#ffffff' : '#fdfcff'};border:1px solid rgba(105,75,232,0.12);font-size:18px;font-weight:800;color:${index % 3 === 0 ? palette.primary : palette.text};text-align:center;box-shadow:0 10px 24px rgba(18,15,38,0.04);">${name}</div>
+      `).join('')}
+    </div>
+  </div>
+</section>`.trim();
+
+    const featuresHtml = `
+<section style="padding:96px 0;background:#ffffff;font-family:Inter,system-ui,sans-serif;color:${palette.text};box-sizing:border-box;">
+  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
+    <div style="max-width:760px;margin-bottom:28px;">
+      <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.primary};margin-bottom:12px;">Возможности</div>
+      <h2 style="font-size:46px;line-height:1.05;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Третий блок даёт много структуры, чтобы код был действительно большим, а не декоративно коротким.</h2>
+      <p style="font-size:18px;line-height:1.75;color:${palette.muted};margin:0;">Ниже карточки с описаниями, списками и техническими подписями. В таком формате удобно гонять тяжёлые результаты и проверять, как ведут себя отступы, сетка, контраст и действия пользователя.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;">
+      ${featureCards.map(([title, text], index) => `
+        <article style="padding:24px;border-radius:24px;background:${index % 2 ? '#f9f7ff' : '#ffffff'};border:1px solid rgba(105,75,232,0.12);box-shadow:0 20px 40px rgba(18,15,38,0.05);transition:transform .3s ease, box-shadow .3s ease;">
+          <div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg, ${palette.primary}, ${palette.secondary});color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;box-shadow:0 12px 24px rgba(105,75,232,0.28);margin-bottom:18px;">0${index + 1}</div>
+          <h3 style="font-size:22px;line-height:1.2;font-weight:800;margin:0 0 10px;">${title}</h3>
+          <p style="font-size:15px;line-height:1.75;color:${palette.muted};margin:0 0 16px;">${text}</p>
+          <ul style="list-style:none;padding:0;margin:0;display:grid;gap:10px;">
+            ${['Крупная вложенность HTML', 'Отдельные строки под CTA и подписи', 'Плотные карточки без пустых заглушек'].map(item => `
+              <li style="display:flex;align-items:flex-start;gap:10px;font-size:14px;line-height:1.6;color:${palette.text};">
+                <span style="flex:0 0 10px;width:10px;height:10px;border-radius:50%;background:${palette.accent};margin-top:7px;"></span>
+                <span>${item}</span>
+              </li>
+            `).join('')}
+          </ul>
+        </article>
+      `).join('')}
+    </div>
+  </div>
+</section>`.trim();
+
+    const casesHtml = `
+<section style="padding:96px 0;background:linear-gradient(180deg, #ffffff 0%, #f6f3ff 100%);font-family:Inter,system-ui,sans-serif;color:${palette.text};box-sizing:border-box;">
+  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
+    <div style="display:grid;grid-template-columns:0.9fr 1.1fr;gap:26px;align-items:start;">
+      <div style="position:sticky;top:20px;">
+        <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.primary};margin-bottom:12px;">Кейсы</div>
+        <h2 style="font-size:44px;line-height:1.06;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Четвёртый блок похож на реальный контентный кейс-раздел и отлично подходит для проверки объёмного кода.</h2>
+        <p style="font-size:18px;line-height:1.75;color:${palette.muted};margin:0 0 20px;">Здесь длинные карточки, подробные подписи и вторичные данные. Такой блок полезен, когда нужно проверить не один hero, а полноценные рабочие секции, которые потом действительно будут жить на странице.</p>
+        <div style="padding:20px;border-radius:22px;background:${palette.dark};color:#fff;box-shadow:0 24px 48px rgba(18,15,38,0.18);">
+          <div style="font-size:14px;color:rgba(255,255,255,0.66);margin-bottom:8px;">Внутренняя заметка</div>
+          <div style="font-size:18px;line-height:1.7;">Если блоки этого размера проходят копирование, вставку и визуальную проверку, значит можно смело возвращаться к реальной AI-генерации без опасений за длину ответа.</div>
+        </div>
+      </div>
+      <div style="display:grid;gap:18px;">
+        ${cases.map(([title, text], index) => `
+          <article style="padding:24px;border-radius:24px;background:#fff;border:1px solid rgba(105,75,232,0.12);box-shadow:0 18px 40px rgba(18,15,38,0.05);">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px;">
+              <h3 style="font-size:24px;line-height:1.2;font-weight:800;margin:0;">${title}</h3>
+              <span style="padding:8px 12px;border-radius:999px;background:${index % 2 ? '#ede9fe' : '#fff7ed'};color:${index % 2 ? palette.primary : '#9a3412'};font-size:12px;font-weight:800;">Case ${index + 1}</span>
+            </div>
+            <p style="font-size:16px;line-height:1.8;color:${palette.muted};margin:0 0 14px;">${text}</p>
+            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;">
+              ${['Многоуровневая вёрстка', 'Подготовленные CTA', 'Длинные текстовые цепочки'].map(item => `
+                <div style="padding:14px 16px;border-radius:16px;background:#faf7ff;border:1px solid rgba(105,75,232,0.08);font-size:14px;font-weight:700;color:${palette.text};">${item}</div>
+              `).join('')}
+            </div>
+          </article>
+        `).join('')}
+      </div>
+    </div>
+  </div>
+</section>`.trim();
+
+    const processHtml = `
+<section style="padding:92px 0;background:${palette.dark};font-family:Inter,system-ui,sans-serif;color:#fff;box-sizing:border-box;">
+  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
+    <div style="max-width:760px;margin-bottom:28px;">
+      <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.accent};margin-bottom:12px;">Процесс</div>
+      <h2 style="font-size:46px;line-height:1.05;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Пятый блок показывает путь от промпта до вставки и добавляет много содержательного HTML в одну секцию.</h2>
+      <p style="font-size:18px;line-height:1.75;color:rgba(255,255,255,0.74);margin:0;">Когда секция описывает процесс, в ней неизбежно появляются шаги, карточки, пояснения, рамки и дополнительные элементы интерфейса. Именно это и нужно для теста длинного кода.</p>
+    </div>
+    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;">
+      ${steps.map(([num, title, text]) => `
+        <article style="padding:24px;border-radius:24px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);backdrop-filter:blur(12px);box-shadow:0 20px 40px rgba(0,0,0,0.18);">
+          <div style="font-size:14px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:${palette.accent};margin-bottom:16px;">Шаг ${num}</div>
+          <h3 style="font-size:22px;line-height:1.2;font-weight:800;margin:0 0 10px;">${title}</h3>
+          <p style="font-size:15px;line-height:1.75;color:rgba(255,255,255,0.74);margin:0 0 16px;">${text}</p>
+          <div style="padding:14px 16px;border-radius:16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);font-size:13px;line-height:1.6;color:rgba(255,255,255,0.70);">Подсказка: именно такие секции чаще всего получаются объёмными при реальной генерации, поэтому тест нужно проводить не на коротких заглушках, а на плотных сценариях.</div>
+        </article>
+      `).join('')}
+    </div>
+  </div>
+</section>`.trim();
+
+    const faqHtml = `
+<section style="padding:92px 0;background:#ffffff;font-family:Inter,system-ui,sans-serif;color:${palette.text};box-sizing:border-box;">
+  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
+    <div style="display:grid;grid-template-columns:0.85fr 1.15fr;gap:24px;align-items:start;">
+      <div>
+        <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.primary};margin-bottom:12px;">FAQ</div>
+        <h2 style="font-size:44px;line-height:1.08;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Шестой блок нужен, чтобы протестировать длинные ответы, аккордеонные карточки и плотный текстовый ритм.</h2>
+        <p style="font-size:18px;line-height:1.75;color:${palette.muted};margin:0;">FAQ всегда раздувает HTML естественным образом. Поэтому это идеальный кандидат для локальной проверки: много контента, много вложенности и много шансов поймать возможный сбой до настоящей генерации.</p>
+      </div>
+      <div style="display:grid;gap:14px;">
+        ${faqs.map(([question, answer], index) => `
+          <article style="padding:22px 22px 20px;border-radius:22px;background:${index % 2 ? '#faf7ff' : '#ffffff'};border:1px solid rgba(105,75,232,0.12);box-shadow:0 16px 34px rgba(18,15,38,0.05);">
+            <div style="display:flex;align-items:start;gap:14px;">
+              <div style="flex:0 0 42px;width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg, ${palette.primary}, ${palette.secondary});color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;">?</div>
+              <div>
+                <h3 style="font-size:21px;line-height:1.3;font-weight:800;margin:0 0 10px;">${question}</h3>
+                <p style="font-size:15px;line-height:1.8;color:${palette.muted};margin:0;">${answer}</p>
+              </div>
+            </div>
+          </article>
+        `).join('')}
+      </div>
+    </div>
+  </div>
+</section>`.trim();
+
+    const ctaHtml = `
+<section style="padding:100px 0;background:linear-gradient(135deg, #120f26 0%, #20183b 48%, #3d2e75 100%);font-family:Inter,system-ui,sans-serif;color:#fff;box-sizing:border-box;">
+  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
+    <div style="padding:34px;border-radius:30px;background:linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));border:1px solid rgba(255,255,255,0.14);box-shadow:0 34px 70px rgba(0,0,0,0.26);overflow:hidden;position:relative;">
+      <div style="position:absolute;right:-80px;top:-60px;width:260px;height:260px;background:radial-gradient(circle, rgba(233,204,87,0.32), transparent 70%);"></div>
+      <div style="display:grid;grid-template-columns:1fr auto;gap:22px;align-items:end;margin-bottom:24px;">
+        <div>
+          <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.accent};margin-bottom:12px;">Финальный CTA</div>
+          <h2 style="font-size:48px;line-height:1.03;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;max-width:760px;">Кнопка проверки возвращена прямо в рабочую панель: теперь можно гонять 7 больших блоков перед реальным тестом с AI.</h2>
+          <p style="font-size:18px;line-height:1.75;color:rgba(255,255,255,0.76);margin:0;max-width:760px;">Этот финальный блок завершает сценарий и специально остаётся большим по объёму кода: здесь есть CTA, список выгод, компактный footer и несколько самостоятельных зон, чтобы проверка была максимально близка к живой странице.</p>
+        </div>
+        <div style="display:flex;flex-direction:column;gap:12px;min-width:250px;">
+          <a href="#" style="display:inline-flex;align-items:center;justify-content:center;padding:16px 26px;border-radius:14px;background:${palette.accent};color:${palette.text};font-size:16px;font-weight:800;text-decoration:none;">Вставить все блоки по очереди</a>
+          <a href="#" style="display:inline-flex;align-items:center;justify-content:center;padding:16px 26px;border-radius:14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-size:16px;font-weight:700;text-decoration:none;">Скопировать общий HTML</a>
+        </div>
+      </div>
+      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px;">
+        ${['Подходит для быстрого smoke-test перед демо', 'Позволяет проверить реальные объёмы секций', 'Помогает валидировать вставку без затрат на API'].map(text => `
+          <div style="padding:18px;border-radius:18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);font-size:15px;line-height:1.7;color:rgba(255,255,255,0.78);">${text}</div>
+        `).join('')}
+      </div>
+      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.12);">
+        <div style="font-size:14px;line-height:1.7;color:rgba(255,255,255,0.62);">Tilda Space AI • Prepared code test flow • Large HTML verification mode</div>
+        <div style="display:flex;flex-wrap:wrap;gap:18px;font-size:14px;color:rgba(255,255,255,0.72);">
+          <span>Герой</span>
+          <span>Карточки</span>
+          <span>Кейсы</span>
+          <span>FAQ</span>
+          <span>CTA</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>`.trim();
+
+    const blocks: TestBlock[] = [
+      { type: 'hero', html: heroHtml },
+      { type: 'trust', html: trustHtml },
+      { type: 'features', html: featuresHtml },
+      { type: 'cases', html: casesHtml },
+      { type: 'process', html: processHtml },
+      { type: 'faq', html: faqHtml },
+      { type: 'cta', html: ctaHtml }
+    ];
+
+    const tooSmall = blocks.filter((block) => block.html.length < this.testBlockMinLength);
+    if (tooSmall.length > 0) {
+      throw new Error(`Тестовые блоки слишком короткие: ${tooSmall.map((block) => block.type).join(', ')}`);
+    }
+
+    return blocks;
   }
 
   private updateBlockStatus(index: number, icon: string, text: string) {
