@@ -1,92 +1,9 @@
 import { PANEL_CSS } from './styles';
+import type { DesignSystem, BlockPlan, AgentPlan, AnimationOptions } from '../shared/aiRuntime';
+import { createLargeTestBlocks, type TestBlock } from '../shared/testBlocks';
+import type { RecordedAction, BlockAgentJobSnapshot, BlockAgentJobResult, TildaUploadParams, TildaUploadResponse } from './types';
+import { applyAnimations, fixHtmlForTilda, exportAsHtmlFile, clipboardWrite } from './htmlUtils';
 
-interface DesignSystem {
-  primaryColor: string;
-  secondaryColor: string;
-  accentColor: string;
-  bgLight: string;
-  bgDark: string;
-  textColor: string;
-  textMuted: string;
-  fontFamily: string;
-  headingStyle: string;
-  buttonStyle: string;
-  borderRadius: string;
-  sectionPadding: string;
-}
-
-interface BlockPlan {
-  type: string;
-  description: string;
-}
-
-interface AgentPlan {
-  designSystem: DesignSystem;
-  blocks: BlockPlan[];
-}
-
-interface AnimationOptions {
-  staggerReveal: boolean;
-  fadeInUp: boolean;
-  zoomIn: boolean;
-  cardLift: boolean;
-  glowHover: boolean;
-  tiltHover: boolean;
-  textClip: boolean;
-  parallax: boolean;
-  floatSubtle: boolean;
-}
-
-interface RecordedAction {
-  n: number;
-  step: string;
-  ts: string;
-  delayMs: number;
-  action: 'click' | 'dblclick' | 'key';
-  key?: string;
-  docUrl: string;
-  tag: string;
-  id: string;
-  classes: string;
-  text: string;
-  ariaLabel: string;
-  role: string;
-  rect: { w: number; h: number };
-  path: string;
-  selector: string;
-  selectors: string[];
-  inIframe: boolean;
-  parentFormbox: string;
-  parentRecord: string;
-  parentRecordUi: string;
-  tpRecordUiHovered: boolean;
-}
-
-interface TestBlock {
-  type: string;
-  html: string;
-}
-
-type BlockAgentJobStatus = 'queued' | 'running' | 'retrying' | 'success' | 'error';
-
-interface BlockAgentJobSnapshot {
-  jobId: string;
-  planId?: string;
-  blockIndex: number;
-  blockType: string;
-  status: BlockAgentJobStatus;
-  attempts: number;
-  maxRetries: number;
-  createdAt: number;
-  startedAt?: number;
-  finishedAt?: number;
-  nextRetryAt?: number;
-  error?: string;
-}
-
-interface BlockAgentJobResult extends BlockAgentJobSnapshot {
-  html?: string;
-}
 
 class TildaSpaceAI {
   private shadow: ShadowRoot;
@@ -99,15 +16,28 @@ class TildaSpaceAI {
   private recordingCounter = 0;
   private lastRecordTs = 0;
   private readonly testBlockMinLength = 2500;
+  private lastPlan: { designSystem: DesignSystem; blocks: BlockPlan[]; animOptions: AnimationOptions } | null = null;
+  private generationHistory: { timestamp: number; prompt: string; blocksCount: number }[] = [];
+  private generationAborted = false;
 
   constructor() {
     const host = document.createElement('div');
     host.id = 'tilda-space-ai-root';
+    host.style.position = 'fixed';
+    host.style.zIndex = '2147483647';
+    host.style.top = '0';
+    host.style.right = '0';
+    host.style.width = '0';
+    host.style.height = '0';
+    host.style.pointerEvents = 'none';
     document.body.appendChild(host);
     this.shadow = host.attachShadow({ mode: 'closed' });
 
     const style = document.createElement('style');
-    style.textContent = PANEL_CSS;
+    style.textContent = PANEL_CSS + `
+      :host { pointer-events: none; }
+      .ts-fab, .ts-panel { pointer-events: auto; }
+    `;
     this.shadow.appendChild(style);
 
     this.fab = this.createFAB();
@@ -117,6 +47,7 @@ class TildaSpaceAI {
 
     this.setupClickRecorder();
     this.setupRuntimeHandlers();
+    this.setupHotkeys();
     this.checkApiKey();
 
     chrome.storage.onChanged.addListener((changes, namespace) => {
@@ -150,6 +81,22 @@ class TildaSpaceAI {
       }
 
       return false;
+    });
+  }
+
+  private setupHotkeys() {
+    document.addEventListener('keydown', (e: KeyboardEvent) => {
+      // Ctrl+Enter or Cmd+Enter → trigger generate
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter' && this.isOpen) {
+        e.preventDefault();
+        const genBtn = this.shadow.querySelector('#tsa-generate-btn') as HTMLButtonElement | null;
+        if (genBtn && !genBtn.disabled) genBtn.click();
+      }
+      // Escape → close panel
+      if (e.key === 'Escape' && this.isOpen) {
+        e.preventDefault();
+        this.toggle();
+      }
     });
   }
 
@@ -320,17 +267,32 @@ class TildaSpaceAI {
   private createFAB(): HTMLElement {
     const btn = document.createElement('button');
     btn.className = 'ts-fab';
-    btn.textContent = '✨';
+    this.updateFabIcon(btn, false);
     btn.title = 'Tilda Space AI';
     btn.addEventListener('click', () => this.toggle());
     return btn;
   }
 
+  private updateFabIcon(btn: HTMLElement, isOpen: boolean) {
+    btn.innerHTML = isOpen
+      ? '<svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>'
+      : `
+      <svg class="tfe-cloud-icon" viewBox="0 0 32 32" xmlns="http://www.w3.org/2000/svg">
+        <path class="tfe-cloud-base" fill="#ffffff" d="M9 22C5.686 22 3 19.314 3 16C3 12.686 5.686 10 9 10C9.663 10 10.298 10.113 10.887 10.316C12.15 7.24 15.228 5 18.8 5C23.329 5 27 8.582 27 13C27 13.111 26.998 13.221 26.993 13.332C28.749 14.194 30 16.035 30 18.2C30 21.403 27.403 24 24.2 24L9 22Z"/>
+        <path class="tfe-cloud-top" fill="rgba(255,255,255,0.8)" d="M14 19C11.791 19 10 17.209 10 15C10 12.791 11.791 11 14 11C14.442 11 14.865 11.075 15.258 11.21C16.1 9.16 18.152 7.667 20.533 7.667C23.553 7.667 26 10.055 26 13C26 13.074 25.999 13.147 25.995 13.221C27.166 13.796 28 15.023 28 16.467C28 18.602 26.269 20.333 24.133 20.333L14 19Z"/>
+        <circle class="tfe-particle p1" cx="8" cy="8" r="1.5" fill="#fff" />
+        <circle class="tfe-particle p2" cx="24" cy="6" r="2" fill="#fff" />
+        <circle class="tfe-particle p3" cx="28" cy="22" r="1" fill="#fff" />
+        <circle class="tfe-particle p4" cx="6" cy="24" r="1.5" fill="#fff" />
+      </svg>
+    `;
+  }
+
   private toggle() {
     this.isOpen = !this.isOpen;
-    this.panel.classList.toggle('open', this.isOpen);
+    this.panel.classList.toggle('active', this.isOpen);
     this.fab.classList.toggle('active', this.isOpen);
-    this.fab.textContent = this.isOpen ? '✕' : '✨';
+    this.updateFabIcon(this.fab, this.isOpen);
   }
 
   private createPanel(): HTMLElement {
@@ -338,16 +300,19 @@ class TildaSpaceAI {
     panel.className = 'ts-panel';
     panel.innerHTML = `
       <div class="ts-header">
-        <div class="ts-header-copy">
-          <div class="ts-header-badge">AI page system</div>
-          <h2>Tilda Space AI</h2>
-          <div class="ts-header-meta">Генерация блоков, ordered insert и тесты прямо внутри редактора</div>
+        <div class="ts-title">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2L2 22h20L12 2z"/></svg>
+          Tilda Space AI
         </div>
-        <button class="ts-close">✕</button>
+        <button class="ts-settings-icon" id="ts-settings-header" aria-label="Settings">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path></svg>
+        </button>
+        <button class="ts-close" id="ts-close-header" aria-label="Close">✕</button>
       </div>
       <div class="ts-body" id="ts-body"></div>
     `;
-    panel.querySelector('.ts-close')!.addEventListener('click', () => this.toggle());
+    panel.querySelector('#ts-close-header')!.addEventListener('click', () => this.toggle());
+    panel.querySelector('#ts-settings-header')!.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }));
     return panel;
   }
 
@@ -367,148 +332,194 @@ class TildaSpaceAI {
   private renderNoKeyUI() {
     const body = this.getBody();
     body.innerHTML = `
-      <div class="ts-no-key">
-        <div class="ts-empty-state">
-          <div class="ts-header-badge">Setup required</div>
-          <h3>Сначала подключи Gemini API</h3>
-          <p>После сохранения ключа панель откроет генерацию блоков, SVG-инструменты, тест 7 больших секций и вставку в Tilda по очереди.</p>
-          <div class="ts-empty-actions">
-            <button class="ts-btn-open">Открыть настройки</button>
-          </div>
-        </div>
+      <div style="text-align:center; padding: 40px 20px;">
+        <svg width="48" height="48" viewBox="0 0 24 24" fill="none" stroke="#cbd5e1" stroke-width="1.5" style="margin-bottom: 16px;">
+          <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+          <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
+        </svg>
+        <h3 style="margin-bottom: 8px; font-weight: 700; color: #0f172a;">Требуется ключ API</h3>
+        <p style="color: #64748b; font-size: 13px; margin-bottom: 24px; line-height: 1.5;">Для генерации контента подключите ваш Gemini API ключ в настройках расширения.</p>
+        <button class="ts-btn-primary" id="ts-open-settings-nokey">Открыть настройки</button>
       </div>
     `;
-    body.querySelector('.ts-btn-open')!.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }));
+    body.querySelector('#ts-open-settings-nokey')!.addEventListener('click', () => chrome.runtime.sendMessage({ type: 'OPEN_POPUP' }));
   }
 
   private renderPromptUI() {
     const body = this.getBody();
     body.innerHTML = `
-      <div class="ts-hero-card">
-        <div class="ts-hero-badge">Parallel block agents</div>
-        <div class="ts-hero-title">Собирай страницу как продакшн-сценарий, а не как набор случайных кнопок</div>
-        <div class="ts-hero-text">Один orchestrator проектирует страницу, дальше отдельный агент генерирует каждый блок, а вставка в Tilda идёт строго по порядку.</div>
-        <div class="ts-hero-metrics">
-          <div class="ts-metric"><strong>1</strong><span>общий дизайн-план страницы</span></div>
-          <div class="ts-metric"><strong>N</strong><span>отдельных block-agent job</span></div>
-          <div class="ts-metric"><strong>Queue</strong><span>ordered insert без ломания структуры</span></div>
-        </div>
-      </div>
-
-      <div class="ts-section">
-        <div class="ts-section-head">
-          <div class="ts-section-title">Бриф страницы</div>
-          <div class="ts-section-subtitle">Опиши оффер, стиль и блоки. Панель сохранит единый tone of voice и соберёт страницу в одной системе.</div>
-        </div>
-        <div class="ts-prompt-area">
-          <textarea id="ts-prompt" placeholder="Опишите сайт, который нужно создать...&#10;&#10;Например: premium лендинг для AI-сервиса, hero + benefits + cases + FAQ + CTA, строгий dark tech стиль."></textarea>
-        </div>
-        <div class="ts-template-row" style="display: none;">
-          <button class="ts-template-btn" id="ts-use-as-template" type="button">📄 Использовать эту страницу как шаблон</button>
-          <div class="ts-template-status" id="ts-template-status"></div>
-        </div>
-        <div class="ts-mode-row">
-          <label class="ts-mode-label">
-            <input type="checkbox" id="ts-single-block" />
-            <span>Только 1 блок для быстрого прогона и локальной проверки цепочки</span>
-          </label>
-        </div>
-      </div>
-
-      <div class="ts-anim-row">
-        <div class="ts-section-head">
-          <div class="ts-section-title">Анимации и visual hints</div>
-          <div class="ts-section-subtitle">Это не отдельный конструктор эффектов, а подсказки для агентов, чтобы они строили блоки под нужный визуальный ритм.</div>
-        </div>
-        <div class="ts-anim-header">
-          <span class="ts-anim-title">Пресеты анимаций</span>
-          <div class="ts-anim-presets">
-            <button type="button" class="ts-anim-preset" data-preset="none">Выкл</button>
-            <button type="button" class="ts-anim-preset" data-preset="light">Лёгкие</button>
-            <button type="button" class="ts-anim-preset" data-preset="premium">Премиум</button>
+      <!-- Generator Accordion -->
+      <div class="ts-accordion-wrap open">
+        <button class="ts-accordion-header" type="button">
+          🎨 Генерация блока
+          <svg class="ts-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="ts-accordion-body">
+          <label class="ts-label" style="margin-top:0">Промпт дизайна</label>
+          <textarea id="ts-prompt" class="ts-input" placeholder="Опишите структуру и стиль блока... (напр. 'Темный hero-блок с 3D анимацией')"></textarea>
+          
+          <div class="ts-template-row" style="display: none; margin-top: 8px;">
+            <button class="ts-btn-secondary" id="ts-use-as-template" type="button">📄 Использовать как шаблон</button>
+            <div class="ts-template-status" id="ts-template-status" style="font-size: 12px; color: #64748b; margin-top: 4px;"></div>
           </div>
-        </div>
-        <div class="ts-anim-group">
-          <span class="ts-anim-group-title">Появление при скролле</span>
-          <div class="ts-anim-checks">
-            <label class="ts-anim-label" title="Элементы появляются каскадом с задержкой"><input type="checkbox" id="ts-anim-stagger-reveal" /><span>Каскад (stagger)</span></label>
-            <label class="ts-anim-label" title="Появление снизу вверх"><input type="checkbox" id="ts-anim-fade-in-up" /><span>Fade In Up</span></label>
-            <label class="ts-anim-label" title="Увеличение при появлении на экране"><input type="checkbox" id="ts-anim-zoom-in" /><span>Zoom In</span></label>
-            <label class="ts-anim-label" title="Заголовки раскрываются слева направо"><input type="checkbox" id="ts-anim-text-clip" /><span>Text clip reveal</span></label>
-          </div>
-        </div>
-        <div class="ts-anim-group">
-          <span class="ts-anim-group-title">Hover-эффекты</span>
-          <div class="ts-anim-checks">
-            <label class="ts-anim-label" title="Карточки приподнимаются с тенью"><input type="checkbox" id="ts-anim-card-lift" /><span>Card lift</span></label>
-            <label class="ts-anim-label" title="Свечение акцентного цвета"><input type="checkbox" id="ts-anim-glow-hover" /><span>Glow</span></label>
-            <label class="ts-anim-label" title="Лёгкий 3D наклон при наведении"><input type="checkbox" id="ts-anim-tilt-hover" /><span>Tilt 3D</span></label>
-          </div>
-        </div>
-        <div class="ts-anim-group">
-          <span class="ts-anim-group-title">Фоновые эффекты</span>
-          <div class="ts-anim-checks">
-            <label class="ts-anim-label" title="Смещение слоёв при прокрутке"><input type="checkbox" id="ts-anim-parallax" /><span>Параллакс</span></label>
-            <label class="ts-anim-label" title="Лёгкое покачивание элементов"><input type="checkbox" id="ts-anim-float-subtle" /><span>Float</span></label>
+          
+          <div style="margin-top: 12px;">
+            <label class="ts-pill-checkbox">
+              <input type="checkbox" id="ts-single-block" class="ts-visually-hidden ts-pill-checkbox-input" />
+              <span class="ts-pill-label">Включить локальный 1 блок</span>
+            </label>
           </div>
         </div>
       </div>
 
-      <div class="ts-recorder-row">
-        <span class="ts-recorder-title">📹 Запись действий</span>
-        <div class="ts-recorder-btns">
-          <button class="ts-recorder-start" id="ts-recorder-start" type="button">Запустить</button>
-          <button class="ts-recorder-stop" id="ts-recorder-stop" type="button" disabled>Стоп</button>
-          <button class="ts-recorder-copy" id="ts-recorder-copy" type="button" disabled title="JSON для скрипта">Скопировать JSON</button>
-          <button class="ts-recorder-copy-steps" id="ts-recorder-copy-steps" type="button" disabled title="Пошаговый лог">Скопировать пошагово</button>
+      <!-- Scenarios Accordion -->
+      <div class="ts-accordion-wrap">
+        <button class="ts-accordion-header" type="button">
+          📚 Готовые сценарии
+          <svg class="ts-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="ts-accordion-body">
+          <div class="ts-suggestions-scroll">
+            <button class="ts-suggestion ts-suggestion-kvai" data-prompt="Создай визуально ошеломляющий, ультрапремиальный лендинг из 7 блоков для авангардного web-бутика &quot;NeuroSync&quot;, который делает сайты с фокусом на 3D, motion-дизайн и нестандартный UX.
+
+Стиль и арт-дирекшн: &quot;Cyber-Elegance&quot;. Кинематографичный, темный интерфейс с максимальной глубиной. Основной цвет — абсолютный черный (#000000). Акценты: неоновый пурпурный (Magenta, #FF00FF) или жидкое золото. Вместо стандартных карточек — слоистые &quot;стеклянные&quot; панели с эффектом зернистости (noise/grain). Очень крупная, нестандартная, выразительная типографика.
+
+Тон и копирайт: Высокомерный, но чертовски привлекательный. Мало слов, больше визуального веса у каждой фразы. Мы не агентство, мы — лаборатория цифрового искусства. Мы создаем web-проекты, которые выигрывают награды и сводят с ума конкурентов.
+
+СТРУКТУРА СТРАНИЦЫ И JQUERY-ИНТЕРАКТИВЫ (Ровно 7 блоков):
+
+1. Hero Intro: Гигантский H1-заголовок, занимающий 80% экрана (&quot;РАЗРУШАЕМ ПРЕДЕЛЫ WEB-ДИЗАЙНА&quot;). На фоне нужен jQuery-скрипт: при движении мышки (mousemove) элементы заголовка и фоновые абстрактные шейпы должны двигаться с эффектом крутого параллакса с разной скоростью.
+2. Манифест (Scroll Reveal): Текстовый блок с огромной дерзкой цитатой. Через jQuery реализуй появление текста побуквенно или по словам по мере скролла до этого элемента.
+3. Архитектура превосходства (Услуги): Креативная асимметричная сетка (Bento Grid). Напиши jQuery-скрипт: при наведении (hover) на карточку, заголовок должен на долю секунды получать эффект цифрового глитча.
+4. Showcase (Интерактивная галерея проектов): Сделай горизонтальный аккордеон на jQuery. При наведении (hover) на узкую полоску с названием проекта, его карточка плавно &quot;раскрывается&quot; на всю ширину, показывая детали и фоновые изображения, а остальные сжимаются.
+5. Алгоритм синтеза (Процесс): Вертикальный timeline. Через jQuery сделай так, чтобы шаги плавно загорались неоновым свечением строго в тот момент, когда пользователь доскролливает ровно до них.
+6. Hall of Fame (Награды): Огромная, бесконечная текстовая бегущая строка (Marquee). С помощью jQuery привяжи анимацию к скроллу: строка должна ускоряться, когда пользователь крутит колесико мыши.
+7. Ультимативный CTA: Кнопка &quot;Начать проект&quot; слегка &quot;убегает&quot; от курсора на пару пикселей при приближении мыши, а при наведении выдает мощное свечение.
+
+ВАЖНЫЕ ТЕХНИЧЕСКИЕ ПРАВИЛА:
+Напиши реалистичные и сложные jQuery скрипты в тегах &lt;script&gt; в конце HTML каждого блока, чтобы вся интерактивность реально и плавно работала. Не используй стандартные Bootstrap/Tailwind классы, пиши свой собственный уникальный премиальный CSS с использованием CSS-переменных.">🔮 Premium 3D</button>
+            <button class="ts-suggestion" data-prompt="Создай премиальный SaaS лендинг для AI-платформы. Дизайн: Vercel/Linear style. Глубокий темный фон (#09090b), стеклянные карточки (rgba(255,255,255,0.03)), акценты (#22c55e или #3b82f6), тонкие бордеры, светящиеся тени. 
+
+СТРУКТУРА И JQUERY (7 блоков):
+1. Hero: Крупный заголовок, jQuery-скрипт для плавного появления элементов с задержкой (staggered fade-in) при загрузке.
+2. Bento Grid Features: 6 ячеек разного размера. jQuery скрипт: при наведении мыши карточка следует за курсором легким 3D tilt-эффектом и подсвечивает бордеры (glow effect).
+3. Интерактивная схема работы: jQuery табы, переключающиеся без перезагрузки с крутыми CSS-транзишенами содержимого.
+4. Отзывы: Горизонтальный плавный скролл-карусель на jQuery, который можно драгать мышью.
+5. Stats/Numbers: 4 крупных числа. Напиши jQuery-скрипт счетчика (count up) от 0 до числа при попадании блока в зону видимости.
+6. Тарифы: 3 карточки. При выборе toggle &quot;Месяц/Год&quot; через jQuery красиво пересчитываются цены с эффектом slot-machine.
+7. CTA Footer: Эффект параллакса на фоне при скролле. Обязательны крутые hover-стейты кнопок. Напиши все jQuery-скрипты встроено в HTML.">🚀 SaaS Linear</button>
+            <button class="ts-suggestion" data-prompt="Создай брутальный промо-сайт для андеграундного бренда одежды (Neo-Brutalism). Стиль: сырой, дерзкий, громкая асимметрия. Цвета: агрессивный желтый (#ffd93d) фон, толстые черные контуры (4px solid #000), жесткие тени (6px 6px 0 #000). Шрифт: мега-жирный, гротеск. Никаких скруглений.
+
+СТРУКТУРА И JQUERY АНИМАЦИИ (7 блоков):
+1. Hero Title: Заголовок огромными буквами, который при движении мыши (mousemove) через jQuery «разваливается» на слои с эффектом хроматической аберрации.
+2. Бегущая строка: Огромный Marquee, направление и скорость которого через jQuery жестко привязаны к скорости скролла (scroll velocity).
+3. Карточки коллекции: 4 массивные карточки. jQuery скрипт: при клике на карточку она с резким звуком захлопывается как папка или откидывается в сторону.
+4. Манифест (Текст): Огромный абзац текста. jQuery Intersection Observer переключает цвет текста с черного на инвертированный, пока пользователь скроллит по параграфу.
+5. Draggable-элементы: Разбросанные стикеры по экрану. Реализуй на jQuery UI (или чистом jQuery+events) возможность юзеру перетаскивать их мышкой.
+6. Галерея: Masonry-сетка. При наведении на картинку (hover) jQuery включает glitch-анимацию через canvas или CSS-фильтры на долю секунды.
+7. Footer/Subscribe: Форма подписки. Кнопка отправки при наведении дрожит (shake) через jQuery до тех пор, пока юзер не нажмет. Опиши все jQuery скрипты детально в коде.">⚡ Neo Brutalism</button>
+            <button class="ts-suggestion ts-suggestion-svg" data-prompt="Создай элитный Corporate Web-портал (Yandex/Apple style). Чистый белый фон (#ffffff), премиальный светло-серый surface (#f5f5f6), строгий черный текст. Акцент: фирменный синий (#2D7FF9). Дизайн должен дышать: огромные паддинги, выверенная типографика (system-ui), скругления 12px, мягкие глубокие тени.
+
+СТРУКТУРА И JQUERY АНИМАЦИИ (7 блоков):
+1. Hero Statement: Элегантный текст. jQuery скрипт плавно меняет ключевое слово в заголовке каждые 2 секунды (fade in/out text rotator).
+2. Фичи (Sticky Scroll): Сделай секцию, где левая колонка залипает (position: sticky), а правая контентная скроллится. Через jQuery подсвечивай активный пункт меню слева в зависимости от того, какой блок справа сейчас в поле зрения.
+3. Interactive Map/Stats: jQuery hover-эффекты на статистику — рисуй плавные линии соединений или увеличивай графики при наведении.
+4. Экспертиза (Accordion): Профессиональный корпоративный аккордеон на jQuery. Плавное открытие/закрытие (slideUp, slideDown) деталей услуг.
+5. Отзывы-карточки: 3D стеклянные карточки на белом. Через jQuery добавь легкий параллакс карточек относительно друг друга при движении курсора по секции.
+6. News Feed: Горизонтальный скролл с новостями. Кнопки &quot;влево/вправо&quot; для плавной прокрутки контейнера, реализованной на jQuery (&quot;scrollLeft&quot;).
+7. CTA &amp; Complex Footer: Многоуровневый футер. Напиши красивый скрипт валидации email в форме прямо на jQuery (highlight красным при ошибке, зеленая галочка при успехе).">📊 Corp Premium</button>
+          </div>
         </div>
       </div>
 
-      <div class="ts-svg-row">
-        <span class="ts-svg-title">🎨 SVG генератор</span>
-        <div class="ts-svg-section">
-          <label class="ts-svg-label">Иконка (24–48px)</label>
-          <input type="text" id="ts-svg-icon-prompt" placeholder="Опишите иконку" class="ts-svg-input" />
-          <button type="button" id="ts-svg-icon-btn" class="ts-svg-btn">Генерировать иконку</button>
-        </div>
-        <div class="ts-svg-section">
-          <label class="ts-svg-label">Большая анимация</label>
-          <input type="text" id="ts-svg-anim-prompt" placeholder="Опишите анимацию" class="ts-svg-input" />
-          <button type="button" id="ts-svg-anim-btn" class="ts-svg-btn">Генерировать анимацию</button>
-        </div>
-        <div class="ts-svg-result" id="ts-svg-result" style="display:none">
-          <div class="ts-svg-preview" id="ts-svg-preview"></div>
-          <button type="button" id="ts-svg-copy" class="ts-svg-copy">📋 Копировать SVG</button>
+      <!-- Settings / Animations Accordion -->
+      <div class="ts-accordion-wrap">
+        <button class="ts-accordion-header" type="button">
+          ⚙️ Пресеты анимации
+          <svg class="ts-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="ts-accordion-body">
+          <div class="ts-anim-header" style="margin-bottom: 12px;">
+            <div class="ts-anim-presets" style="display: flex; gap: 8px;">
+              <button type="button" class="ts-btn-secondary ts-anim-preset" data-preset="none" style="flex:1">Выкл</button>
+              <button type="button" class="ts-btn-secondary ts-anim-preset" data-preset="light" style="flex:1">Light</button>
+              <button type="button" class="ts-btn-secondary ts-anim-preset" data-preset="premium" style="flex:1">Premium</button>
+            </div>
+          </div>
+          
+          <div class="ts-anim-groups">
+            <div class="ts-anim-group">
+              <span class="ts-anim-group-title">Reveal</span>
+              <div class="ts-checkbox-row">
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-stagger-reveal" /><span class="ts-pill-label">Cascade</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-fade-in-up" /><span class="ts-pill-label">Fade Up</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-zoom-in" /><span class="ts-pill-label">Zoom</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-text-clip" /><span class="ts-pill-label">Text Clip</span></label>
+              </div>
+            </div>
+            <div class="ts-anim-group" style="margin-top: 12px">
+              <span class="ts-anim-group-title">Hover</span>
+              <div class="ts-checkbox-row">
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-card-lift" /><span class="ts-pill-label">Lift</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-glow-hover" /><span class="ts-pill-label">Glow</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-tilt-hover" /><span class="ts-pill-label">3D Tilt</span></label>
+              </div>
+            </div>
+            <div class="ts-anim-group" style="margin-top: 12px">
+              <span class="ts-anim-group-title">Background</span>
+              <div class="ts-checkbox-row">
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-parallax" /><span class="ts-pill-label">Parallax</span></label>
+                <label><input type="checkbox" class="ts-pill-checkbox ts-visually-hidden" id="ts-anim-float-subtle" /><span class="ts-pill-label">Float</span></label>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
-      <div class="ts-generate-actions">
-        <button class="ts-generate-btn" id="ts-generate">🤖 Запустить агентов</button>
-        <button class="ts-test-btn" id="ts-test-large-blocks" type="button">🧪 Проверка 7 больших блоков</button>
+
+      <!-- Recorder Accordion -->
+      <div class="ts-accordion-wrap">
+        <button class="ts-accordion-header" type="button">
+          📹 Запись действий
+          <svg class="ts-accordion-chevron" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="ts-accordion-body">
+          <div class="ts-recorder-wrap">
+            <div style="display: flex; gap: 8px; margin-bottom: 8px;">
+              <button class="ts-recorder-btn ts-recorder-start" id="ts-recorder-start" type="button">Start</button>
+              <button class="ts-btn-secondary ts-recorder-stop" id="ts-recorder-stop" type="button" disabled style="flex:1">Stop</button>
+            </div>
+            <div style="display: flex; gap: 8px;">
+              <button class="ts-btn-secondary" id="ts-recorder-copy" type="button" disabled style="flex:1">📋 JSON</button>
+              <button class="ts-btn-secondary" id="ts-recorder-copy-steps" type="button" disabled style="flex:1">📋 Шаги</button>
+            </div>
+          </div>
+        </div>
       </div>
-      <div class="ts-suggestions">
-        <p>ГОТОВЫЕ СЦЕНАРИИ · 2026</p>
-        <button class="ts-suggestion ts-suggestion-kvai" data-prompt="Лендинг AI-сервиса. Блоки: hero (градиент #694be8→#8167f0, заголовок + CTA), 3–4 карточки преимуществ, тарифы с иконками и ценами, FAQ аккордеон, отзывы 3 шт, CTA, footer. Design system: primary #694be8, accent #e9cc57, bg #0f0f14, text #fff. Border-radius 12px, padding 24px. Premium, конверсионный.">🔮 KV-AI Premium</button>
-        <button class="ts-suggestion" data-prompt="Bento Grid SaaS. Блоки: hero (заголовок + subline), bento-сетка 6–8 модулей разного размера (крупный 2x2, средние 1x2, мелкие 1x1) — каждый модуль: иконка + заголовок + 1 строка текста. Feature showcase, CTA, footer. Цвета: bg #0a0a0a, card #18181b, accent #3b82f6, text #fafafa. Gap 16px, border-radius 16px. Минимум текста, визуальная иерархия через размер ячеек.">📦 Bento Grid SaaS</button>
-        <button class="ts-suggestion" data-prompt="Neo-Brutalism лендинг. Блоки: hero, 3 features в карточках, отзывы, CTA, footer. Ключевое: каждая карточка и кнопка — border: 4px solid #000, box-shadow: 6px 6px 0 #000. Цвета: жёлтый #ffd93d фон карточек, чёрный #000 текст и рамки, белый #fff фон секций. Типография: жирная 700+, без скруглений (border-radius: 0). Асимметрия в layout. Raw, bold, Gen Z aesthetic.">⚡ Neo-Brutalism</button>
-        <button class="ts-suggestion" data-prompt="Glassmorphism лендинг. Блоки: hero (фон тёмный градиент, контент поверх), features в полупрозрачных карточках (background: rgba(255,255,255,0.1), border: 1px solid rgba(255,255,255,0.2)), тарифы, CTA, footer. Цвета: bg #1e293b, accent #818cf8, text #f1f5f9. Карточки с лёгкой тенью. Утончённый, слоёный.">🪟 Glassmorphism</button>
-        <button class="ts-suggestion" data-prompt="Earth Tones лендинг. Блоки: hero, преимущества 3–4, о компании, отзывы, CTA, footer. Цвета: primary #8B7355, secondary #D4A574, bg #faf8f5, text #2d2a26. Тёплые оттенки, много padding 40–60px, line-height 1.6. Шрифты читаемые, воздух между секциями. Человечность, доверие, grounding.">🌿 Earth Tones</button>
-        <button class="ts-suggestion" data-prompt="Dark Tech лендинг (Linear/Vercel style). Блоки: hero с крупной типографикой (48px+), features минималистично 3 колонки, тарифы компактно, CTA, footer. Цвета: bg #09090b, surface #18181b, accent #22c55e или #a855f7, text #a1a1aa. Border-radius 8px. Никакого декора, только контент. Скорость, чистота, premium.">🚀 Dark Tech</button>
-        <button class="ts-suggestion" data-prompt="Креативное агентство. Блоки: hero крупный заголовок + субтитр, галерея работ 6 карточек (2x3) с hover-эффектом, услуги 4 с иконками, о команде 2–3 человека, контакты + CTA, footer. Цвета: bg #fff, accent #f97316, text #0f0f0f. Типография: заголовки 700–800, размер 36–48px. Смелый, креативный.">🎨 Креатив-агентство</button>
-        <button class="ts-suggestion" data-prompt="Лендинг кофейни. Блоки: hero с крупным фото (800px height), меню 3 категории (напитки, десерты, завтраки), о нас, галерея 4 фото, отзывы, контакты + карта, footer. Цвета: primary #6F4E37, bg #FFF8F0, accent #8B4513. Шрифты: основной читаемый, заголовки можно cursive для атмосферы. Уют, тепло.">☕ Кофейня</button>
-        <button class="ts-suggestion" data-prompt="Лендинг фитнес-клуба. Блоки: hero с мотивационным заголовком, направления 4–6 карточек (тренажёрка, йога, групповые и т.д.), тренеры 3 с фото и именем, тарифы 3 плана, отзывы, CTA, footer. Цвета: bg #f8fafc, accent #f97316 или #ef4444, text #1e293b. Динамика, контраст, энергия.">💪 Фитнес</button>
-        <button class="ts-suggestion ts-suggestion-yandex" data-prompt="Yandex Metrika Style (по образцу yandex.ru/adv/metrika). Design system: bg #ffffff, bgAlt #f5f5f6, primary #2D7FF9 (Yandex blue), text #000000, textMuted #666666, font Yandex Sans / -apple-system / system-ui. Hero: H1 крупный 40–48px + subline + CTA-кнопка «Создать»/«Начать» + stat-badge (например «95% используют»). Feature-duo: 2 большие карточки 50/50 — иконка 32px + заголовок H3 + 2–3 строки текста. Grid «Возможности»: 5–6 карточек-ссылок в сетке — иконка + заголовок + 1 строка. Stats: 3 крупных числа (9 млн, 1.6 млн, 120) + подписи в ряд. News: 3 карточки — дата + заголовок + excerpt + «Подробнее». Promo-block: тёмный контрастный блок (bg #1a1a1a), title + описание + CTA «Подробнее». «Читайте также»: 6–8 карточек статей — thumbnail, заголовок, дата, excerpt, тег. FAQ «С чего начать»: accordion 4–5 вопросов. CTA: 2 кнопки рядом. Footer: 3 быстрые ссылки (иконка+текст) + колонки. Карточки: border-radius 12px, box-shadow: 0 2px 8px rgba(0,0,0,0.08), padding 24px. Кнопки: primary filled #2D7FF9, secondary outline. Никаких тяжёлых градиентов — чистый корпоративный стиль.">📊 Yandex Metrika Style</button>
-        <button class="ts-suggestion ts-suggestion-svg" data-prompt="Лендинг с настоящими SVG-анимациями. ВСЕ иконки — inline SVG с <animate>, <animateTransform> (движение, морфинг, пульсация). Hero: крупный анимированный SVG — движущиеся формы, градиенты. Карточки: у каждой анимированная SVG-иконка. Фоновые декорации: анимированные волны, круги. Цвета подбирай сам под единый стиль. Минимум 5–6 уникальных SVG-анимаций.">🎨 SVG Animated</button>
+
+      <div class="ts-actions-grid">
+        <button class="ts-btn-primary" id="ts-generate">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="22" y1="2" x2="11" y2="13"></line><polygon points="22 2 15 22 11 13 2 9 22 2"></polygon></svg>
+          Создать нейро-блок
+        </button>
+        <button class="ts-test-btn" id="ts-test-large-blocks" type="button" style="width: auto;">🧪 7 blocks</button>
       </div>
-      
+
       <!-- Секция основного лога генерации -->
       <div id="ts-agent-log"></div>
 
       <!-- Секция ДЛЯ ОТЛАДКИ -->
       <div class="ts-debug-section">
-        <button class="ts-debug-toggle" id="ts-debug-toggle">🐛 Показать лог отладки (вставка в Tilda)</button>
-        <div class="ts-debug-log" id="ts-debug-log" style="display: none;"></div>
+        <button class="ts-btn-secondary" id="ts-debug-toggle" style="width:100%">🐛 Показать лог отладки</button>
+        <div class="ts-debug-log" style="display: none;" id="ts-debug-log"></div>
       </div>
     `;
+
+    // Initialize accordions
+    body.querySelectorAll('.ts-accordion-header').forEach(header => {
+      header.addEventListener('click', () => {
+        header.parentElement?.classList.toggle('open');
+      });
+    });
 
     const promptEl = body.querySelector('#ts-prompt') as HTMLTextAreaElement;
     const generateBtn = body.querySelector('#ts-generate') as HTMLButtonElement;
@@ -530,13 +541,19 @@ class TildaSpaceAI {
     const useTemplateBtn = body.querySelector('#ts-use-as-template') as HTMLButtonElement;
     const templateStatus = body.querySelector('#ts-template-status') as HTMLDivElement;
 
-    this.updateTemplateStatus(templateStatus);
+    if (templateStatus) {
+      this.updateTemplateStatus(templateStatus);
+    }
 
-    useTemplateBtn.addEventListener('click', () => {
-      const mainContent = document.querySelector('#allrecords') || document.querySelector('.t-container') || document.querySelector('main') || document.body;
-      const html = mainContent === document.body ? document.documentElement.outerHTML : mainContent.innerHTML;
-      chrome.storage.local.set({ templateHtml: html }, () => this.updateTemplateStatus(templateStatus));
-    });
+    if (useTemplateBtn) {
+      useTemplateBtn.addEventListener('click', () => {
+        const mainContent = document.querySelector('#allrecords') || document.querySelector('.t-container') || document.querySelector('main') || document.body;
+        const html = mainContent === document.body ? document.documentElement.outerHTML : mainContent.innerHTML;
+        chrome.storage.local.set({ templateHtml: html }, () => {
+          if (templateStatus) this.updateTemplateStatus(templateStatus);
+        });
+      });
+    }
 
     const getAnimationOptions = (): AnimationOptions => ({
       staggerReveal: (body.querySelector('#ts-anim-stagger-reveal') as HTMLInputElement)?.checked ?? false,
@@ -591,7 +608,6 @@ class TildaSpaceAI {
         const p = (btn as HTMLElement).dataset.prompt || '';
         promptEl.value = p;
         promptEl.focus();
-        // Ставим курсор в самое начало, чтобы пользователю было удобно дописать тему
         promptEl.selectionStart = 0;
         promptEl.selectionEnd = 0;
       });
@@ -671,52 +687,6 @@ class TildaSpaceAI {
         });
       });
     }
-
-    // SVG генератор
-    let lastSvg = '';
-    const svgIconPrompt = body.querySelector('#ts-svg-icon-prompt') as HTMLInputElement;
-    const svgAnimPrompt = body.querySelector('#ts-svg-anim-prompt') as HTMLInputElement;
-    const svgIconBtn = body.querySelector('#ts-svg-icon-btn');
-    const svgAnimBtn = body.querySelector('#ts-svg-anim-btn');
-    const svgResult = body.querySelector('#ts-svg-result') as HTMLElement;
-    const svgPreview = body.querySelector('#ts-svg-preview') as HTMLElement;
-    const svgCopyBtn = body.querySelector('#ts-svg-copy');
-    const runSvgGen = async (type: 'icon' | 'anim') => {
-      const prompt = type === 'icon' ? svgIconPrompt?.value?.trim() : svgAnimPrompt?.value?.trim();
-      if (!prompt) return;
-      const btn = type === 'icon' ? svgIconBtn : svgAnimBtn;
-      if (btn) { (btn as HTMLButtonElement).disabled = true; (btn as HTMLButtonElement).textContent = '…'; }
-      try {
-        const resp = await this.sendMessage({
-          type: type === 'icon' ? 'GENERATE_SVG_ICON' : 'GENERATE_SVG_ANIMATION',
-          prompt,
-          size: type === 'icon' ? 48 : undefined,
-        }) as { success: boolean; svg?: string; error?: string };
-        if (resp.success && resp.svg) {
-          lastSvg = resp.svg;
-          if (svgResult) svgResult.style.display = 'block';
-          if (svgPreview) {
-            svgPreview.innerHTML = '';
-            const wrap = document.createElement('div');
-            wrap.style.cssText = 'padding:16px;background:#f8fafc;border-radius:8px;display:flex;align-items:center;justify-content:center;min-height:80px;';
-            wrap.innerHTML = resp.svg;
-            const svgEl = wrap.querySelector('svg');
-            if (svgEl && type === 'anim') { svgEl.setAttribute('width', '200'); svgEl.setAttribute('height', '150'); }
-            else if (svgEl && type === 'icon') { svgEl.setAttribute('width', '48'); svgEl.setAttribute('height', '48'); }
-            svgPreview.appendChild(wrap);
-          }
-        } else {
-          this.debugLog(`SVG ошибка: ${resp.error || 'unknown'}`);
-        }
-      } finally {
-        if (btn) { (btn as HTMLButtonElement).disabled = false; (btn as HTMLButtonElement).textContent = type === 'icon' ? 'Генерировать иконку' : 'Генерировать анимацию'; }
-      }
-    };
-    if (svgIconBtn) svgIconBtn.addEventListener('click', () => runSvgGen('icon'));
-    if (svgAnimBtn) svgAnimBtn.addEventListener('click', () => runSvgGen('anim'));
-    if (svgCopyBtn) svgCopyBtn.addEventListener('click', () => {
-      if (lastSvg) navigator.clipboard.writeText(lastSvg).then(() => { (svgCopyBtn as HTMLButtonElement).textContent = '✓ Скопировано'; setTimeout(() => { (svgCopyBtn as HTMLButtonElement).textContent = '📋 Копировать SVG'; }, 1500); });
-    });
   }
 
   private updateTemplateStatus(el: HTMLDivElement | null) {
@@ -793,6 +763,7 @@ class TildaSpaceAI {
         blockIndex: index,
         totalBlocks: blocks.length,
         animOptions,
+        allBlocks: blocks,
       }) as { success: boolean; job?: BlockAgentJobSnapshot; error?: string };
 
       if (!resp.success || !resp.job) {
@@ -835,6 +806,9 @@ class TildaSpaceAI {
     if (snapshot.status === 'queued') {
       return { icon: '⏳', text: 'В очереди...' };
     }
+    if (snapshot.status === 'streaming') {
+      return { icon: '🌊', text: 'Пишу код...' };
+    }
     if (snapshot.status === 'running') {
       return { icon: '🤖', text: `Агент работает (${snapshot.attempts}/${snapshot.maxRetries})...` };
     }
@@ -856,7 +830,14 @@ class TildaSpaceAI {
     const testBtn = this.shadow.querySelector('#ts-test-large-blocks') as HTMLButtonElement | null;
     generateBtn.disabled = true;
     if (testBtn) testBtn.disabled = true;
-    generateBtn.textContent = '🤖 Агенты работают...';
+    generateBtn.textContent = '⏹ Остановить';
+    generateBtn.disabled = false; // re-enable as stop button
+    this.generationAborted = false;
+
+    // Wire the button as a stop trigger
+    const stopHandler = () => { this.generationAborted = true; generateBtn.textContent = '⏳ Останавливаем...'; generateBtn.disabled = true; };
+    generateBtn.addEventListener('click', stopHandler, { once: true });
+
     this.generatedBlocks = [];
     this.clearDebugLog();
     this.debugLog('▶ Запуск генерации...');
@@ -889,6 +870,7 @@ class TildaSpaceAI {
       }) as { success: boolean; plan?: AgentPlan; error?: string };
       if (!planResp.success || !planResp.plan) throw new Error(planResp.error || 'Ошибка планирования');
       const plan = planResp.plan;
+      this.lastPlan = { designSystem: plan.designSystem, blocks: plan.blocks, animOptions: animOptions };
       this.debugLog(`Оркестратор ✓ План: ${plan.blocks.length} блоков (${plan.blocks.map(b => b.type).join(', ')})`);
 
       this.log(`
@@ -925,6 +907,15 @@ class TildaSpaceAI {
           </div>
         `);
       }
+
+      // Progress bar
+      this.appendLog(`
+        <div id="ts-progress-wrapper">
+          <div class="ts-progress-text" id="ts-progress-text">0 / ${blocksToGenerate.length} блоков</div>
+          <div class="ts-progress-bar"><div class="ts-progress-fill" id="ts-progress-fill" style="width:0%"></div></div>
+        </div>
+      `);
+
       const planId = crypto.randomUUID();
       const blockJobIds = await this.startBlockAgentJobs(planId, plan.designSystem, blocksToGenerate, animOptions);
       const terminalSnapshots = new Map<number, BlockAgentJobSnapshot>();
@@ -942,7 +933,16 @@ class TildaSpaceAI {
 
         for (const { index, snapshot } of pendingSnapshots) {
           const statusInfo = this.describeBlockAgentStatus(snapshot);
-          this.updateBlockStatus(index, statusInfo.icon, statusInfo.text);
+
+          if (snapshot.status === 'streaming' && snapshot.partialHtml) {
+            const codePreview = snapshot.partialHtml.length > 500
+              ? snapshot.partialHtml.slice(-500)
+              : snapshot.partialHtml;
+            const streamingHtml = `<div class="ts-streaming-preview" style="font-family:monospace;font-size:10px;line-height:1.2;color:#10b981;white-space:pre-wrap;background:#0f172a;padding:8px;border-radius:4px;margin-top:4px;max-height:80px;overflow:hidden">${this.escapeHtml(codePreview)}<span class="ts-cursor">_</span></div>`;
+            this.updateBlockStatus(index, statusInfo.icon, statusInfo.text + streamingHtml);
+          } else {
+            this.updateBlockStatus(index, statusInfo.icon, statusInfo.text);
+          }
 
           if (snapshot.status === 'success' || snapshot.status === 'error') {
             terminalSnapshots.set(index, snapshot);
@@ -959,6 +959,13 @@ class TildaSpaceAI {
             completedHtmlByIndex.set(index, result.html);
             this.generatedBlocks[index] = result.html;
             this.debugLog(`Блок ${index + 1} готов worker-agent'ом, длина: ${result.html.length}`);
+
+            // Update progress bar
+            const pct = Math.round((fetchedResults.size / blocksToGenerate.length) * 100);
+            const progressFill = this.shadow.querySelector('#ts-progress-fill') as HTMLElement;
+            const progressText = this.shadow.querySelector('#ts-progress-text') as HTMLElement;
+            if (progressFill) progressFill.style.width = `${pct}%`;
+            if (progressText) progressText.textContent = `${fetchedResults.size} / ${blocksToGenerate.length} блоков (${pct}%)`;
           }
         }
 
@@ -975,7 +982,7 @@ class TildaSpaceAI {
           this.debugLog(`--- конец превью ---`);
           this.updateBlockStatus(nextInsertIndex, '📥', 'Вставляю в Tilda...');
           const inserted = await this.insertBlockIntoTilda(html, nextInsertIndex, animOptions);
-          this.updateBlockStatus(nextInsertIndex, inserted ? '✅' : '📋', inserted ? 'Вставлен' : 'Скопирован');
+          this.updateBlockStatus(nextInsertIndex, inserted ? '✅' : '📋', inserted ? 'Вставлен' : 'Скопирован', true);
           completedHtmlByIndex.delete(nextInsertIndex);
           nextInsertIndex += 1;
         }
@@ -1021,12 +1028,17 @@ class TildaSpaceAI {
 
       // Final summary (всегда показываем)
       const readyBlocksCount = this.generatedBlocks.filter(Boolean).length;
+      this.generationHistory.push({ timestamp: Date.now(), prompt, blocksCount: readyBlocksCount });
       this.appendLog(`
         <div class="ts-agent-done">
           <div style="font-size:20px;margin-bottom:8px">🎉</div>
           <div style="font-weight:700;margin-bottom:4px">${readyBlocksCount} блоков создано!</div>
           <div style="font-size:12px;color:#64748b">Генерация выполнена через отдельные block-agent job, вставка шла через ordered queue</div>
           <button class="ts-action-btn ts-btn-copy" id="ts-copy-all" style="margin-top:12px;width:100%">📋 Копировать весь HTML</button>
+          <div class="ts-export-section">
+            <button class="ts-export-btn" id="ts-export-html">💾 Скачать .html</button>
+            <button class="ts-export-btn" id="ts-export-blocks">📦 Скачать блоки</button>
+          </div>
         </div>
       `);
 
@@ -1039,13 +1051,50 @@ class TildaSpaceAI {
         });
       }
 
+      // Export as single HTML file
+      const exportHtmlBtn = this.shadow.querySelector('#ts-export-html');
+      if (exportHtmlBtn) {
+        exportHtmlBtn.addEventListener('click', () => {
+          this.exportAsHtmlFile(this.collectGeneratedHtml(), 'tilda-page.html');
+        });
+      }
+
+      // Export blocks as separate sections
+      const exportBlocksBtn = this.shadow.querySelector('#ts-export-blocks');
+      if (exportBlocksBtn) {
+        exportBlocksBtn.addEventListener('click', () => {
+          this.generatedBlocks.filter(Boolean).forEach((html, i) => {
+            this.exportAsHtmlFile(html, `block-${i + 1}.html`);
+          });
+        });
+      }
+
     } catch (err) {
-      this.debugLog(`❌ Критическая ошибка: ${err instanceof Error ? err.message : String(err)}`);
-      this.appendLog(`<div class="ts-error">❌ ${err instanceof Error ? err.message : 'Ошибка'}</div>`);
+      const errMsg = err instanceof Error ? err.message : String(err);
+      if (this.generationAborted) {
+        this.debugLog('⏹ Генерация остановлена пользователем');
+        this.appendLog(`<div class="ts-error">⏹ Генерация остановлена</div>`);
+      } else {
+        this.debugLog(`❌ Критическая ошибка: ${errMsg}`);
+        this.appendLog(`<div class="ts-error">❌ ${errMsg}</div>`);
+      }
     } finally {
+      generateBtn.removeEventListener('click', stopHandler);
       generateBtn.disabled = false;
       generateBtn.textContent = '🤖 Запустить агентов';
       if (testBtn) testBtn.disabled = false;
+      this.generationAborted = false;
+
+      // Chrome notification when generation finishes
+      try {
+        const count = this.generatedBlocks.filter(Boolean).length;
+        if (count > 0) {
+          chrome.runtime.sendMessage({
+            type: 'GENERATION_DONE',
+            blocksCount: count,
+          });
+        }
+      } catch (_) { /* ignore if runtime unavailable */ }
     }
   }
 
@@ -1127,295 +1176,94 @@ class TildaSpaceAI {
   }
 
   private createLargeTestBlocks(): TestBlock[] {
-    const palette = {
-      primary: '#694be8',
-      secondary: '#8167f0',
-      accent: '#e9cc57',
-      light: '#f8f7ff',
-      dark: '#17132b',
-      text: '#120f26',
-      muted: '#6b6784'
-    };
-
-    const metricCards = [
-      ['14 мин', 'Среднее время от идеи до первой версии страницы'],
-      ['7 блоков', 'Полный тестовый сценарий для вставки по порядку'],
-      ['0 ручных правок', 'Когда структура и стиль попадают в ожидание с первой попытки']
-    ];
-
-    const featureCards = [
-      ['AI-стратегия', 'Собирает структуру страницы, тезисы и акценты под конкретный оффер за один прогон.'],
-      ['SVG и анимации', 'Добавляет иконки, glow-эффекты, мягкие hover-сценарии и аккуратную глубину интерфейса.'],
-      ['Tilda-ready HTML', 'На выходе получается код, который удобно вставлять блоками и сразу проверять в редакторе.'],
-      ['Сценарии промптов', 'Можно быстро переключаться между кейсами: SaaS, агентства, портфолио, продукты и лендинги.'],
-      ['Единая дизайн-система', 'Цвета, радиусы, тени и типографика живут в одном наборе и не расползаются между секциями.'],
-      ['Поток тестирования', 'Проверочный режим помогает быстро гонять длинные HTML-блоки без вызовов Gemini API.']
-    ];
-
-    const cases = [
-      ['EdTech-платформа', 'Собрали hero, сетку преимуществ, кейсы преподавателей и CTA для демо-записи.'],
-      ['B2B SaaS', 'Сделали плотный enterprise-лендинг с метриками, сравнением сценариев и FAQ.'],
-      ['Агентство', 'Подняли дорогую подачу с сильным оффером, процессом работы и витриной кейсов.'],
-      ['AI-продукт', 'Отдельно протестировали длинные кодовые блоки для устойчивой вставки в Tilda.']
-    ];
-
-    const steps = [
-      ['01', 'Бриф и контекст', 'Сначала задаём бизнес-задачу, тональность, аудиторию и визуальный референс.'],
-      ['02', 'План страницы', 'Оркестратор разбивает страницу на блоки, чтобы каждый агент работал по точному ТЗ.'],
-      ['03', 'Генерация HTML', 'Каждый блок получает крупный, подробный и вставляемый код без пустых заглушек.'],
-      ['04', 'Вставка и проверка', 'Сравниваем объём кода, тестируем вставку, оцениваем визуальный результат в Tilda.']
-    ];
-
-    const faqs = [
-      ['Зачем нужен режим проверки?', 'Он позволяет быстро проверить вставку больших HTML-блоков без ожидания ответа от модели и без расхода токенов.'],
-      ['Почему именно 7 блоков?', 'Это удобный полный сценарий страницы: hero, доверие, возможности, кейсы, процесс, FAQ и финальный CTA.'],
-      ['Что значит "большой код"?', 'Мы специально делаем плотный HTML с карточками, списками, метриками и вложенной структурой, чтобы стресс-тест был ближе к реальной генерации.'],
-      ['Можно ли эти блоки вставлять в Tilda?', 'Да, они вставляются так же, как обычные результаты генерации: по одному блоку в стандартный пайплайн.']
-    ];
-
-    const heroHtml = `
-<section style="padding:96px 0;background:radial-gradient(circle at top left, rgba(233,204,87,0.30), transparent 24%), linear-gradient(135deg, ${palette.dark} 0%, #231c45 52%, ${palette.primary} 100%);font-family:Inter,system-ui,sans-serif;color:#ffffff;box-sizing:border-box;">
-  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
-    <div style="display:grid;grid-template-columns:1.15fr 0.85fr;gap:32px;align-items:center;">
-      <div>
-        <div style="display:inline-flex;align-items:center;gap:10px;padding:8px 14px;border-radius:999px;background:rgba(255,255,255,0.10);border:1px solid rgba(255,255,255,0.18);font-size:13px;font-weight:700;letter-spacing:0.02em;text-transform:uppercase;">
-          <span style="width:9px;height:9px;border-radius:50%;background:${palette.accent};box-shadow:0 0 18px rgba(233,204,87,0.8);display:inline-block;"></span>
-          Локальная проверка 7 больших блоков
-        </div>
-        <h1 style="font-size:64px;line-height:1.02;font-weight:800;letter-spacing:-0.04em;margin:22px 0 18px;max-width:760px;">Проверяем длинный HTML-код так, будто страница уже готова к продакшену.</h1>
-        <p style="font-size:20px;line-height:1.7;color:rgba(255,255,255,0.82);max-width:720px;margin:0 0 28px;">Этот hero создан специально для стресс-теста: длинные строки, вложенные сетки, большие карточки, насыщенная типографика и несколько слоёв декоративных элементов. Если такой блок стабильно вставляется в Tilda, значит и реальные большие генерации будут проходить заметно спокойнее.</p>
-        <div style="display:flex;flex-wrap:wrap;gap:14px;margin-bottom:30px;">
-          <a href="#" style="display:inline-flex;align-items:center;justify-content:center;padding:16px 30px;border-radius:14px;background:${palette.accent};color:${palette.text};font-weight:800;text-decoration:none;box-shadow:0 18px 40px rgba(233,204,87,0.28);transition:all .3s ease;">Проверить вставку</a>
-          <a href="#" style="display:inline-flex;align-items:center;justify-content:center;padding:16px 30px;border-radius:14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.18);color:#fff;font-weight:700;text-decoration:none;transition:all .3s ease;">Скопировать код блока</a>
-        </div>
-        <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;">
-          ${metricCards.map(([value, label]) => `
-            <div style="padding:18px;border-radius:18px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.12);backdrop-filter:blur(14px);">
-              <div style="font-size:28px;font-weight:800;margin-bottom:6px;">${value}</div>
-              <div style="font-size:14px;line-height:1.5;color:rgba(255,255,255,0.74);">${label}</div>
-            </div>
-          `).join('')}
-        </div>
-      </div>
-      <div>
-        <div style="position:relative;padding:24px;border-radius:28px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);box-shadow:0 30px 60px rgba(0,0,0,0.24);overflow:hidden;">
-          <div style="position:absolute;inset:auto -60px -80px auto;width:220px;height:220px;background:radial-gradient(circle, rgba(233,204,87,0.45), transparent 70%);"></div>
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:18px;">
-            <div>
-              <div style="font-size:12px;text-transform:uppercase;letter-spacing:0.12em;color:rgba(255,255,255,0.55);margin-bottom:6px;">Prepared code monitor</div>
-              <div style="font-size:22px;font-weight:800;">Block size dashboard</div>
-            </div>
-            <div style="padding:10px 14px;border-radius:999px;background:rgba(233,204,87,0.18);color:${palette.accent};font-size:12px;font-weight:800;">READY</div>
-          </div>
-          <div style="display:grid;gap:12px;">
-            ${['Hero block / 5.4 KB', 'Features block / 6.1 KB', 'Cases block / 4.8 KB', 'FAQ block / 4.4 KB'].map((row, idx) => `
-              <div style="display:flex;align-items:center;justify-content:space-between;padding:15px 16px;border-radius:16px;background:rgba(14,11,30,0.34);border:1px solid rgba(255,255,255,0.08);">
-                <div>
-                  <div style="font-size:15px;font-weight:700;margin-bottom:4px;">${row}</div>
-                  <div style="font-size:13px;line-height:1.5;color:rgba(255,255,255,0.66);">Секция ${idx + 1} готова к копированию, предпросмотру и вставке без повторного прогона модели.</div>
-                </div>
-                <div style="width:12px;height:12px;border-radius:50%;background:${idx % 2 === 0 ? palette.accent : '#7dd3fc'};box-shadow:0 0 14px rgba(255,255,255,0.38);"></div>
-              </div>
-            `).join('')}
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>`.trim();
-
-    const trustHtml = `
-<section style="padding:88px 0;background:${palette.light};font-family:Inter,system-ui,sans-serif;color:${palette.text};box-sizing:border-box;">
-  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
-    <div style="display:flex;flex-wrap:wrap;align-items:end;justify-content:space-between;gap:20px;margin-bottom:28px;">
-      <div style="max-width:740px;">
-        <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.primary};margin-bottom:12px;">Доверие и контекст</div>
-        <h2 style="font-size:42px;line-height:1.08;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Второй блок специально плотный: логотипы, тезисы, цифры и длинные подписи в одном экране.</h2>
-        <p style="font-size:18px;line-height:1.75;color:${palette.muted};margin:0;">Такой формат помогает быстро понять, не ломается ли вёрстка на карточках доверия, длинных строках и насыщенных текстовых массивах, когда блок уже готов к настоящей вставке в проект.</p>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(2,minmax(160px,1fr));gap:12px;min-width:320px;">
-        ${[['92%', 'совпадения по визуальному тону'], ['5.8 KB', 'средний объём HTML на секцию'], ['14 слоёв', 'включая бейджи, метрики и подписи'], ['1 клик', 'до копирования или вставки в Tilda']].map(([value, label]) => `
-          <div style="padding:18px;border-radius:18px;background:#fff;border:1px solid rgba(105,75,232,0.12);box-shadow:0 12px 30px rgba(18,15,38,0.05);">
-            <div style="font-size:26px;font-weight:800;color:${palette.primary};margin-bottom:6px;">${value}</div>
-            <div style="font-size:14px;line-height:1.5;color:${palette.muted};">${label}</div>
-          </div>
-        `).join('')}
-      </div>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:14px;">
-      ${['KV-AI Studio', 'Launchbase', 'Tilda Labs', 'Growth Signals', 'Design Ops', 'Prompt Flow', 'Page Forge', 'Studio Nine'].map((name, index) => `
-        <div style="padding:18px 20px;border-radius:18px;background:${index % 2 ? '#ffffff' : '#fdfcff'};border:1px solid rgba(105,75,232,0.12);font-size:18px;font-weight:800;color:${index % 3 === 0 ? palette.primary : palette.text};text-align:center;box-shadow:0 10px 24px rgba(18,15,38,0.04);">${name}</div>
-      `).join('')}
-    </div>
-  </div>
-</section>`.trim();
-
-    const featuresHtml = `
-<section style="padding:96px 0;background:#ffffff;font-family:Inter,system-ui,sans-serif;color:${palette.text};box-sizing:border-box;">
-  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
-    <div style="max-width:760px;margin-bottom:28px;">
-      <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.primary};margin-bottom:12px;">Возможности</div>
-      <h2 style="font-size:46px;line-height:1.05;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Третий блок даёт много структуры, чтобы код был действительно большим, а не декоративно коротким.</h2>
-      <p style="font-size:18px;line-height:1.75;color:${palette.muted};margin:0;">Ниже карточки с описаниями, списками и техническими подписями. В таком формате удобно гонять тяжёлые результаты и проверять, как ведут себя отступы, сетка, контраст и действия пользователя.</p>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;">
-      ${featureCards.map(([title, text], index) => `
-        <article style="padding:24px;border-radius:24px;background:${index % 2 ? '#f9f7ff' : '#ffffff'};border:1px solid rgba(105,75,232,0.12);box-shadow:0 20px 40px rgba(18,15,38,0.05);transition:transform .3s ease, box-shadow .3s ease;">
-          <div style="width:48px;height:48px;border-radius:14px;background:linear-gradient(135deg, ${palette.primary}, ${palette.secondary});color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;box-shadow:0 12px 24px rgba(105,75,232,0.28);margin-bottom:18px;">0${index + 1}</div>
-          <h3 style="font-size:22px;line-height:1.2;font-weight:800;margin:0 0 10px;">${title}</h3>
-          <p style="font-size:15px;line-height:1.75;color:${palette.muted};margin:0 0 16px;">${text}</p>
-          <ul style="list-style:none;padding:0;margin:0;display:grid;gap:10px;">
-            ${['Крупная вложенность HTML', 'Отдельные строки под CTA и подписи', 'Плотные карточки без пустых заглушек'].map(item => `
-              <li style="display:flex;align-items:flex-start;gap:10px;font-size:14px;line-height:1.6;color:${palette.text};">
-                <span style="flex:0 0 10px;width:10px;height:10px;border-radius:50%;background:${palette.accent};margin-top:7px;"></span>
-                <span>${item}</span>
-              </li>
-            `).join('')}
-          </ul>
-        </article>
-      `).join('')}
-    </div>
-  </div>
-</section>`.trim();
-
-    const casesHtml = `
-<section style="padding:96px 0;background:linear-gradient(180deg, #ffffff 0%, #f6f3ff 100%);font-family:Inter,system-ui,sans-serif;color:${palette.text};box-sizing:border-box;">
-  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
-    <div style="display:grid;grid-template-columns:0.9fr 1.1fr;gap:26px;align-items:start;">
-      <div style="position:sticky;top:20px;">
-        <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.primary};margin-bottom:12px;">Кейсы</div>
-        <h2 style="font-size:44px;line-height:1.06;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Четвёртый блок похож на реальный контентный кейс-раздел и отлично подходит для проверки объёмного кода.</h2>
-        <p style="font-size:18px;line-height:1.75;color:${palette.muted};margin:0 0 20px;">Здесь длинные карточки, подробные подписи и вторичные данные. Такой блок полезен, когда нужно проверить не один hero, а полноценные рабочие секции, которые потом действительно будут жить на странице.</p>
-        <div style="padding:20px;border-radius:22px;background:${palette.dark};color:#fff;box-shadow:0 24px 48px rgba(18,15,38,0.18);">
-          <div style="font-size:14px;color:rgba(255,255,255,0.66);margin-bottom:8px;">Внутренняя заметка</div>
-          <div style="font-size:18px;line-height:1.7;">Если блоки этого размера проходят копирование, вставку и визуальную проверку, значит можно смело возвращаться к реальной AI-генерации без опасений за длину ответа.</div>
-        </div>
-      </div>
-      <div style="display:grid;gap:18px;">
-        ${cases.map(([title, text], index) => `
-          <article style="padding:24px;border-radius:24px;background:#fff;border:1px solid rgba(105,75,232,0.12);box-shadow:0 18px 40px rgba(18,15,38,0.05);">
-            <div style="display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:14px;">
-              <h3 style="font-size:24px;line-height:1.2;font-weight:800;margin:0;">${title}</h3>
-              <span style="padding:8px 12px;border-radius:999px;background:${index % 2 ? '#ede9fe' : '#fff7ed'};color:${index % 2 ? palette.primary : '#9a3412'};font-size:12px;font-weight:800;">Case ${index + 1}</span>
-            </div>
-            <p style="font-size:16px;line-height:1.8;color:${palette.muted};margin:0 0 14px;">${text}</p>
-            <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;">
-              ${['Многоуровневая вёрстка', 'Подготовленные CTA', 'Длинные текстовые цепочки'].map(item => `
-                <div style="padding:14px 16px;border-radius:16px;background:#faf7ff;border:1px solid rgba(105,75,232,0.08);font-size:14px;font-weight:700;color:${palette.text};">${item}</div>
-              `).join('')}
-            </div>
-          </article>
-        `).join('')}
-      </div>
-    </div>
-  </div>
-</section>`.trim();
-
-    const processHtml = `
-<section style="padding:92px 0;background:${palette.dark};font-family:Inter,system-ui,sans-serif;color:#fff;box-sizing:border-box;">
-  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
-    <div style="max-width:760px;margin-bottom:28px;">
-      <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.accent};margin-bottom:12px;">Процесс</div>
-      <h2 style="font-size:46px;line-height:1.05;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Пятый блок показывает путь от промпта до вставки и добавляет много содержательного HTML в одну секцию.</h2>
-      <p style="font-size:18px;line-height:1.75;color:rgba(255,255,255,0.74);margin:0;">Когда секция описывает процесс, в ней неизбежно появляются шаги, карточки, пояснения, рамки и дополнительные элементы интерфейса. Именно это и нужно для теста длинного кода.</p>
-    </div>
-    <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:18px;">
-      ${steps.map(([num, title, text]) => `
-        <article style="padding:24px;border-radius:24px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.12);backdrop-filter:blur(12px);box-shadow:0 20px 40px rgba(0,0,0,0.18);">
-          <div style="font-size:14px;font-weight:800;letter-spacing:0.14em;text-transform:uppercase;color:${palette.accent};margin-bottom:16px;">Шаг ${num}</div>
-          <h3 style="font-size:22px;line-height:1.2;font-weight:800;margin:0 0 10px;">${title}</h3>
-          <p style="font-size:15px;line-height:1.75;color:rgba(255,255,255,0.74);margin:0 0 16px;">${text}</p>
-          <div style="padding:14px 16px;border-radius:16px;background:rgba(255,255,255,0.04);border:1px solid rgba(255,255,255,0.08);font-size:13px;line-height:1.6;color:rgba(255,255,255,0.70);">Подсказка: именно такие секции чаще всего получаются объёмными при реальной генерации, поэтому тест нужно проводить не на коротких заглушках, а на плотных сценариях.</div>
-        </article>
-      `).join('')}
-    </div>
-  </div>
-</section>`.trim();
-
-    const faqHtml = `
-<section style="padding:92px 0;background:#ffffff;font-family:Inter,system-ui,sans-serif;color:${palette.text};box-sizing:border-box;">
-  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
-    <div style="display:grid;grid-template-columns:0.85fr 1.15fr;gap:24px;align-items:start;">
-      <div>
-        <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.primary};margin-bottom:12px;">FAQ</div>
-        <h2 style="font-size:44px;line-height:1.08;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;">Шестой блок нужен, чтобы протестировать длинные ответы, аккордеонные карточки и плотный текстовый ритм.</h2>
-        <p style="font-size:18px;line-height:1.75;color:${palette.muted};margin:0;">FAQ всегда раздувает HTML естественным образом. Поэтому это идеальный кандидат для локальной проверки: много контента, много вложенности и много шансов поймать возможный сбой до настоящей генерации.</p>
-      </div>
-      <div style="display:grid;gap:14px;">
-        ${faqs.map(([question, answer], index) => `
-          <article style="padding:22px 22px 20px;border-radius:22px;background:${index % 2 ? '#faf7ff' : '#ffffff'};border:1px solid rgba(105,75,232,0.12);box-shadow:0 16px 34px rgba(18,15,38,0.05);">
-            <div style="display:flex;align-items:start;gap:14px;">
-              <div style="flex:0 0 42px;width:42px;height:42px;border-radius:14px;background:linear-gradient(135deg, ${palette.primary}, ${palette.secondary});color:#fff;display:flex;align-items:center;justify-content:center;font-size:18px;font-weight:800;">?</div>
-              <div>
-                <h3 style="font-size:21px;line-height:1.3;font-weight:800;margin:0 0 10px;">${question}</h3>
-                <p style="font-size:15px;line-height:1.8;color:${palette.muted};margin:0;">${answer}</p>
-              </div>
-            </div>
-          </article>
-        `).join('')}
-      </div>
-    </div>
-  </div>
-</section>`.trim();
-
-    const ctaHtml = `
-<section style="padding:100px 0;background:linear-gradient(135deg, #120f26 0%, #20183b 48%, #3d2e75 100%);font-family:Inter,system-ui,sans-serif;color:#fff;box-sizing:border-box;">
-  <div style="max-width:1200px;margin:0 auto;padding:0 20px;">
-    <div style="padding:34px;border-radius:30px;background:linear-gradient(135deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));border:1px solid rgba(255,255,255,0.14);box-shadow:0 34px 70px rgba(0,0,0,0.26);overflow:hidden;position:relative;">
-      <div style="position:absolute;right:-80px;top:-60px;width:260px;height:260px;background:radial-gradient(circle, rgba(233,204,87,0.32), transparent 70%);"></div>
-      <div style="display:grid;grid-template-columns:1fr auto;gap:22px;align-items:end;margin-bottom:24px;">
-        <div>
-          <div style="font-size:13px;font-weight:800;text-transform:uppercase;letter-spacing:0.1em;color:${palette.accent};margin-bottom:12px;">Финальный CTA</div>
-          <h2 style="font-size:48px;line-height:1.03;font-weight:800;letter-spacing:-0.03em;margin:0 0 14px;max-width:760px;">Кнопка проверки возвращена прямо в рабочую панель: теперь можно гонять 7 больших блоков перед реальным тестом с AI.</h2>
-          <p style="font-size:18px;line-height:1.75;color:rgba(255,255,255,0.76);margin:0;max-width:760px;">Этот финальный блок завершает сценарий и специально остаётся большим по объёму кода: здесь есть CTA, список выгод, компактный footer и несколько самостоятельных зон, чтобы проверка была максимально близка к живой странице.</p>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:12px;min-width:250px;">
-          <a href="#" style="display:inline-flex;align-items:center;justify-content:center;padding:16px 26px;border-radius:14px;background:${palette.accent};color:${palette.text};font-size:16px;font-weight:800;text-decoration:none;">Вставить все блоки по очереди</a>
-          <a href="#" style="display:inline-flex;align-items:center;justify-content:center;padding:16px 26px;border-radius:14px;background:rgba(255,255,255,0.08);border:1px solid rgba(255,255,255,0.16);color:#fff;font-size:16px;font-weight:700;text-decoration:none;">Скопировать общий HTML</a>
-        </div>
-      </div>
-      <div style="display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-bottom:24px;">
-        ${['Подходит для быстрого smoke-test перед демо', 'Позволяет проверить реальные объёмы секций', 'Помогает валидировать вставку без затрат на API'].map(text => `
-          <div style="padding:18px;border-radius:18px;background:rgba(255,255,255,0.06);border:1px solid rgba(255,255,255,0.10);font-size:15px;line-height:1.7;color:rgba(255,255,255,0.78);">${text}</div>
-        `).join('')}
-      </div>
-      <div style="display:flex;flex-wrap:wrap;justify-content:space-between;gap:20px;padding-top:20px;border-top:1px solid rgba(255,255,255,0.12);">
-        <div style="font-size:14px;line-height:1.7;color:rgba(255,255,255,0.62);">Tilda Space AI • Prepared code test flow • Large HTML verification mode</div>
-        <div style="display:flex;flex-wrap:wrap;gap:18px;font-size:14px;color:rgba(255,255,255,0.72);">
-          <span>Герой</span>
-          <span>Карточки</span>
-          <span>Кейсы</span>
-          <span>FAQ</span>
-          <span>CTA</span>
-        </div>
-      </div>
-    </div>
-  </div>
-</section>`.trim();
-
-    const blocks: TestBlock[] = [
-      { type: 'hero', html: heroHtml },
-      { type: 'trust', html: trustHtml },
-      { type: 'features', html: featuresHtml },
-      { type: 'cases', html: casesHtml },
-      { type: 'process', html: processHtml },
-      { type: 'faq', html: faqHtml },
-      { type: 'cta', html: ctaHtml }
-    ];
-
-    const tooSmall = blocks.filter((block) => block.html.length < this.testBlockMinLength);
-    if (tooSmall.length > 0) {
-      throw new Error(`Тестовые блоки слишком короткие: ${tooSmall.map((block) => block.type).join(', ')}`);
-    }
-
-    return blocks;
+    return createLargeTestBlocks(this.testBlockMinLength);
   }
 
-  private updateBlockStatus(index: number, icon: string, text: string) {
+  private updateBlockStatus(index: number, icon: string, text: string, showActions = false) {
     const el = this.shadow.querySelector(`#ts-block-${index}`);
     if (!el) return;
     const statusEl = el.querySelector('.ts-agent-status');
-    if (statusEl) statusEl.innerHTML = `${icon} ${text}`;
+    if (!statusEl) return;
+
+    let actionsHtml = '';
+    if (showActions) {
+      actionsHtml = `
+        <div class="ts-block-actions">
+          <button class="ts-block-action-btn" data-action="copy" data-index="${index}">📋 Копировать</button>
+          <button class="ts-block-action-btn" data-action="regen" data-index="${index}">🔄 Перегенерировать</button>
+          <button class="ts-block-action-btn" data-action="preview" data-index="${index}">👁 Превью</button>
+          <button class="ts-block-action-btn" data-action="refine" data-index="${index}">✏ Доработать</button>
+        </div>
+        <div class="ts-refine-panel" id="ts-refine-panel-${index}" style="display:none; margin-top: 8px;">
+          <input type="text" id="ts-refine-input-${index}" placeholder="Что изменить? (напр., 'сделай кнопку красной')" style="width:100%; padding:8px; border-radius:4px; border:1px solid #444; background:#222; color:#fff; font-size:12px; margin-bottom: 8px;" />
+          <button class="ts-block-action-btn" data-action="submit-refine" data-index="${index}" style="width:100%;">Отправить</button>
+        </div>
+        <div class="ts-preview-panel" id="ts-preview-panel-${index}" style="display:none; margin-top: 8px; border: 1px solid #444; border-radius: 4px; overflow: hidden; background: #fff;">
+          <iframe id="ts-preview-iframe-${index}" style="width: 100%; height: 300px; border: none;"></iframe>
+        </div>
+      `;
+    }
+    statusEl.innerHTML = `${icon} ${text}${actionsHtml}`;
+
+    // Bind per-block action buttons
+    if (showActions) {
+      const copyBtn = statusEl.querySelector('[data-action="copy"]');
+      const regenBtn = statusEl.querySelector('[data-action="regen"]');
+      const previewBtn = statusEl.querySelector('[data-action="preview"]');
+      const refineBtn = statusEl.querySelector('[data-action="refine"]');
+      const submitRefineBtn = statusEl.querySelector('[data-action="submit-refine"]');
+
+      if (copyBtn) {
+        copyBtn.addEventListener('click', () => {
+          const html = this.generatedBlocks[index];
+          if (html) {
+            this.clipboardWrite(html);
+            (copyBtn as HTMLElement).textContent = '✓ Скопировано';
+            setTimeout(() => { (copyBtn as HTMLElement).textContent = '📋 Копировать'; }, 2000);
+          }
+        });
+      }
+
+      if (regenBtn) {
+        regenBtn.addEventListener('click', () => this.regenerateBlock(index));
+      }
+
+      if (previewBtn) {
+        previewBtn.addEventListener('click', () => {
+          const previewPanel = this.shadow.querySelector(`#ts-preview-panel-${index}`) as HTMLElement;
+          const iframe = this.shadow.querySelector(`#ts-preview-iframe-${index}`) as HTMLIFrameElement;
+          if (previewPanel && iframe) {
+            if (previewPanel.style.display === 'none') {
+              previewPanel.style.display = 'block';
+              iframe.srcdoc = this.generatedBlocks[index] || '';
+            } else {
+              previewPanel.style.display = 'none';
+            }
+          }
+        });
+      }
+
+      if (refineBtn) {
+        refineBtn.addEventListener('click', () => {
+          const refinePanel = this.shadow.querySelector(`#ts-refine-panel-${index}`) as HTMLElement;
+          if (refinePanel) {
+            refinePanel.style.display = refinePanel.style.display === 'none' ? 'block' : 'none';
+          }
+        });
+      }
+
+      if (submitRefineBtn) {
+        submitRefineBtn.addEventListener('click', () => {
+          const input = this.shadow.querySelector(`#ts-refine-input-${index}`) as HTMLInputElement;
+          const instruction = input?.value.trim() || '';
+          if (instruction) {
+            this.regenerateBlock(index, instruction);
+            const refinePanel = this.shadow.querySelector(`#ts-refine-panel-${index}`) as HTMLElement;
+            if (refinePanel) refinePanel.style.display = 'none';
+          }
+        });
+      }
+    }
   }
 
   private sendMessage(msg: Record<string, unknown>): Promise<Record<string, unknown>> {
@@ -1424,12 +1272,59 @@ class TildaSpaceAI {
     });
   }
 
+  private async regenerateBlock(index: number, refinementInstruction?: string): Promise<void> {
+    if (!this.lastPlan) {
+      this.debugLog('❌ Нет сохранённого плана для перегенерации');
+      return;
+    }
+    const block = this.lastPlan.blocks[index];
+    if (!block) {
+      this.debugLog(`❌ Блок ${index} не найден в плане`);
+      return;
+    }
+
+    this.updateBlockStatus(index, '🔄', 'Перегенерация...');
+    this.debugLog(`🔄 Перегенерация блока ${index + 1}: ${block.type}`);
+
+    try {
+      const resp = await this.sendMessage({
+        type: 'AGENT_BLOCK',
+        designSystem: this.lastPlan.designSystem,
+        block,
+        blockIndex: index,
+        totalBlocks: this.lastPlan.blocks.length,
+        animOptions: this.lastPlan.animOptions,
+        allBlocks: this.lastPlan.blocks,
+        refinementInstruction,
+      }) as { success: boolean; html?: string; error?: string };
+
+      if (!resp.success || !resp.html) {
+        throw new Error(resp.error || 'Ошибка перегенерации');
+      }
+
+      this.generatedBlocks[index] = resp.html;
+      this.debugLog(`✅ Блок ${index + 1} перегенерирован, длина: ${resp.html.length}`);
+
+      const inserted = await this.insertBlockIntoTilda(resp.html, index, this.lastPlan.animOptions);
+      this.updateBlockStatus(index, inserted ? '✅' : '📋', inserted ? 'Перегенерирован и вставлен' : 'Перегенерирован', true);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      this.debugLog(`❌ Ошибка перегенерации: ${msg}`);
+      this.updateBlockStatus(index, '❌', `Ошибка: ${msg}`, true);
+    }
+  }
+
   private getStoredTemplate(): Promise<string | undefined> {
     return new Promise((resolve) => {
       chrome.storage.local.get(['templateHtml'], (result: Record<string, string>) => {
         resolve(result.templateHtml?.trim() || undefined);
       });
     });
+  }
+
+
+  private exportAsHtmlFile(htmlContent: string, filename: string): void {
+    exportAsHtmlFile(htmlContent, filename);
   }
 
   private getSearchableDocuments(): Document[] {
@@ -1488,91 +1383,80 @@ class TildaSpaceAI {
   // ─── Дизайнерские анимации (Tilda Zero Block) ───
 
   private applyAnimations(html: string, opts: AnimationOptions): string {
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(`<body>${html}</body>`, 'text/html');
-      const body = doc.body;
-      if (!body?.firstElementChild) return html;
-
-      const root = body.firstElementChild;
-      const css: string[] = [];
-      const eb = 'cubic-bezier(0.22, 1, 0.36, 1)';
-
-      const hasReveal = opts.staggerReveal || opts.fadeInUp || opts.zoomIn;
-      if (opts.staggerReveal) css.push(`.tsa-stagger{opacity:0;transform:translateY(40px);transition:opacity .7s ${eb},transform .7s ${eb}}.tsa-stagger.tsa-revealed{opacity:1;transform:translateY(0)}`);
-      if (opts.fadeInUp) css.push(`.tsa-fade-up{opacity:0;transform:translateY(28px);transition:opacity .6s ${eb},transform .6s ${eb}}.tsa-fade-up.tsa-revealed{opacity:1;transform:translateY(0)}`);
-      if (opts.zoomIn) css.push(`.tsa-zoom{opacity:0;transform:scale(0.92);transition:opacity .55s ${eb},transform .55s ${eb}}.tsa-zoom.tsa-revealed{opacity:1;transform:scale(1)}`);
-      if (opts.cardLift) css.push(`.tsa-card-lift{transition:transform .35s ${eb},box-shadow .35s ${eb}}.tsa-card-lift:hover{transform:translateY(-8px);box-shadow:0 20px 40px rgba(0,0,0,.12),0 8px 16px rgba(0,0,0,.08)}`);
-      if (opts.glowHover) css.push(`.tsa-glow{transition:box-shadow .4s ease}.tsa-glow:hover{box-shadow:0 0 30px rgba(105,75,232,.35),0 0 60px rgba(105,75,232,.15)}`);
-      if (opts.tiltHover) css.push(`.tsa-tilt{transition:transform .3s ${eb};transform-style:preserve-3d}.tsa-tilt:hover{transform:perspective(800px) rotateX(2deg) rotateY(-2deg) scale(1.02)}`);
-      if (opts.textClip) css.push(`.tsa-text-clip{opacity:0;clip-path:inset(0 100% 0 0);transition:clip-path .8s ${eb},opacity .6s ${eb}}.tsa-text-clip.tsa-revealed{opacity:1;clip-path:inset(0 0 0 0)}`);
-      if (opts.parallax) { css.push(`.tsa-parallax{--py:0;transform:translate3d(0,var(--py),0);transition:transform .15s ease-out;will-change:transform}`); if (opts.cardLift) css.push(`.tsa-card-lift.tsa-parallax:hover{transform:translate3d(0,calc(var(--py) - 8px),0)}`); }
-      if (opts.floatSubtle) css.push(`@keyframes tsa-float{0%,100%{transform:translateY(0)}50%{transform:translateY(-4px)}}.tsa-float{animation:tsa-float 4s ease-in-out infinite}`);
-      if (css.length === 0) return html;
-
-      const sectionLike = Array.from(root.children).filter(
-        ch => ch.tagName !== 'STYLE' && ch.tagName !== 'SCRIPT'
-      ).slice(0, 15);
-
-      sectionLike.forEach((el, i) => {
-        if (hasReveal) {
-          const cls = opts.staggerReveal ? 'tsa-stagger' : opts.fadeInUp ? 'tsa-fade-up' : 'tsa-zoom';
-          el.classList.add(cls, 'tsa-reveal');
-          (el as HTMLElement).style.transitionDelay = `${i * 0.08}s`;
-        }
-        if (opts.cardLift) el.classList.add('tsa-card-lift');
-        if (opts.glowHover) el.classList.add('tsa-glow');
-        if (opts.tiltHover) el.classList.add('tsa-tilt');
-        if (opts.parallax) { el.classList.add('tsa-parallax'); (el as HTMLElement).setAttribute('data-parallax-speed', String(0.2 + (i % 3) * 0.1)); }
-        if (opts.floatSubtle && i % 2 === 0) { el.classList.add('tsa-float'); (el as HTMLElement).style.animationDelay = `${i * 0.2}s`; }
-      });
-
-      if (opts.textClip) {
-        root.querySelectorAll('h1, h2, h3, h4').forEach((h, i) => {
-          if (i > 8) return;
-          h.classList.add('tsa-text-clip', 'tsa-reveal');
-          (h as HTMLElement).style.transitionDelay = `${i * 0.05}s`;
-        });
-      }
-
-      const style = doc.createElement('style');
-      style.textContent = `@media(prefers-reduced-motion:reduce){.tsa-stagger,.tsa-fade-up,.tsa-zoom,.tsa-text-clip,.tsa-float{transition:none;animation:none}}.tsa-reveal{will-change:opacity,transform} ${css.join(' ')}`;
-      body.insertBefore(style, body.firstChild);
-
-      const scripts: string[] = [];
-      if (hasReveal || opts.textClip) {
-        scripts.push(`(function(){var io=typeof IntersectionObserver!=='undefined'?new IntersectionObserver(function(entries){entries.forEach(function(e){if(e.isIntersecting)e.target.classList.add('tsa-revealed');});},{threshold:.06,rootMargin:'0px 0px -50px'}):null;if(io)document.querySelectorAll('.tsa-reveal').forEach(function(el){io.observe(el);});})();`);
-      }
-      if (opts.parallax) {
-        scripts.push(`(function(){var ticking=0;function update(){var sc=window.scrollY||document.documentElement.scrollTop;document.querySelectorAll('.tsa-parallax').forEach(function(el){var s=parseFloat(el.getAttribute('data-parallax-speed'))||0.3;el.style.setProperty('--py',(sc*s*0.1)+'px');});}window.addEventListener('scroll',function(){if(!ticking){requestAnimationFrame(function(){update();ticking=0;});ticking=1;}},{passive:true});update();})();`);
-      }
-      scripts.forEach(s => {
-        const script = doc.createElement('script');
-        script.textContent = s;
-        body.appendChild(script);
-      });
-
-      return body.innerHTML.trim();
-    } catch {
-      return html;
-    }
+    return applyAnimations(html, opts);
   }
 
   // ─── HTML Sanitize (Tilda требует валидный HTML) ───
 
   private fixHtmlForTilda(html: string): string {
-    const trimmed = html.trim();
-    if (!trimmed) return trimmed;
-    try {
-      const parser = new DOMParser();
-      const doc = parser.parseFromString(`<body>${trimmed}</body>`, 'text/html');
-      const body = doc.body;
-      if (!body) return trimmed;
-      const fixed = body.innerHTML.trim();
-      return fixed || trimmed;
-    } catch {
-      return trimmed;
+    return fixHtmlForTilda(html);
+  }
+
+  private async processImagesInHtml(html: string): Promise<string> {
+    const parser = new DOMParser();
+    const doc = parser.parseFromString(html, 'text/html');
+    const imgs = doc.querySelectorAll('img');
+    const elementsWithBg = doc.querySelectorAll('[style*="background-image"]');
+
+    const toUpload: { url: string; element: HTMLElement; attr: string }[] = [];
+
+    imgs.forEach((img) => {
+      const src = img.getAttribute('src');
+      if (src && !src.includes('tildacdn.com')) {
+        toUpload.push({ url: src, element: img, attr: 'src' });
+      }
+    });
+
+    elementsWithBg.forEach((el) => {
+      const style = el.getAttribute('style') || '';
+      const match = style.match(/background-image:\s*url\(['"]?(.*?)['"]?\)/);
+      if (match && match[1] && !match[1].includes('tildacdn.com')) {
+        toUpload.push({ url: match[1], element: el as HTMLElement, attr: 'background-image' });
+      }
+    });
+
+    if (toUpload.length === 0) return html;
+
+    this.debugLog(`Найдено ${toUpload.length} изображений для загрузки в Tilda CDN...`);
+
+    // Get upload params from Tilda page
+    const paramsResp = await this.sendMessage({ type: 'GET_TILDA_UPLOAD_PARAMS' }) as { success: boolean; params?: TildaUploadParams; error?: string };
+    if (!paramsResp.success || !paramsResp.params) {
+      this.debugLog(`⚠️ Не удалось получить ключи загрузки: ${paramsResp.error || 'неизвестная ошибка'}. Использую оригинальные ссылки.`);
+      return html;
     }
+
+    const { params } = paramsResp;
+
+    for (const item of toUpload) {
+      try {
+        this.debugLog(`Загружаю: ${item.url.slice(0, 50)}...`);
+        const filename = item.url.split('/').pop()?.split('?')[0] || 'image.png';
+        const uploadResp = await this.sendMessage({
+          type: 'UPLOAD_IMAGE_TO_TILDA',
+          blobUrl: item.url,
+          filename,
+          params
+        }) as unknown as TildaUploadResponse;
+
+        if (uploadResp.success && uploadResp.url) {
+          if (item.attr === 'src') {
+            item.element.setAttribute('src', uploadResp.url);
+          } else {
+            const oldStyle = item.element.getAttribute('style') || '';
+            const newStyle = oldStyle.replace(/background-image:\s*url\(['"]?(.*?)['"]?\)/, `background-image: url("${uploadResp.url}")`);
+            item.element.setAttribute('style', newStyle);
+          }
+          this.debugLog(`✓ Загружено: ${uploadResp.url}`);
+        } else {
+          this.debugLog(`❌ Ошибка загрузки "${item.url}": ${uploadResp.error}`);
+        }
+      } catch (e) {
+        this.debugLog(`❌ Исключение при загрузке "${item.url}": ${e}`);
+      }
+    }
+
+    return doc.body.innerHTML;
   }
 
   // ─── Tilda Insertion ───
@@ -1581,7 +1465,13 @@ class TildaSpaceAI {
     this.debugLog(`Начинаю вставку блока ${blockIndex + 1}...`);
     try {
       if (blockIndex > 0) await this.wait(600);
-      let processed = this.fixHtmlForTilda(html);
+
+      // --- NEW: Process and upload images before insertion ---
+      this.updateBlockStatus(blockIndex, '🖼️', 'Обработка изображений...');
+      const processedHtml = await this.processImagesInHtml(html);
+      // --------------------------------------------------------
+
+      let processed = this.fixHtmlForTilda(processedHtml);
       const hasAnim = animOptions && (animOptions.staggerReveal || animOptions.fadeInUp || animOptions.zoomIn || animOptions.cardLift || animOptions.glowHover || animOptions.tiltHover || animOptions.textClip || animOptions.parallax || animOptions.floatSubtle);
       if (hasAnim) {
         processed = this.applyAnimations(processed, animOptions);
@@ -2092,17 +1982,7 @@ class TildaSpaceAI {
   }
 
   private async clipboardWrite(text: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = text;
-      ta.style.cssText = 'position:fixed;left:-9999px;opacity:0';
-      document.body.appendChild(ta);
-      ta.focus(); ta.select();
-      try { document.execCommand('copy'); } catch { /* ignore */ }
-      document.body.removeChild(ta);
-    }
+    return clipboardWrite(text);
   }
 }
 
